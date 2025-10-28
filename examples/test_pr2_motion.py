@@ -15,7 +15,7 @@ from pybullet_tools.utils import set_base_values, joint_from_name, quat_from_eul
     wait_for_duration, LockRenderer, base_aligned_z, Point, set_point, get_aabb, stable_z_on_aabb, AABB
 
 # TODO: consider making this a function
-SLEEP = None # None | 0.05
+SLEEP = 0.05 # None | 0.05
 
 
 def test_base_motion(pr2, base_start, base_goal, obstacles=[]):
@@ -138,9 +138,9 @@ def main(use_pr2_drake=True):
 
     base_start = (-2, -2, 0)
     base_goal = (2, 2, 0)
-    arm_start = SIDE_HOLDING_LEFT_ARM
+    #arm_start = SIDE_HOLDING_LEFT_ARM
     #arm_start = TOP_HOLDING_LEFT_ARM
-    #arm_start = REST_LEFT_ARM
+    arm_start = REST_LEFT_ARM
     arm_goal = TOP_HOLDING_LEFT_ARM
     #arm_goal = SIDE_HOLDING_LEFT_ARM
 

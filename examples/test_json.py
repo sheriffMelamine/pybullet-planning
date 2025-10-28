@@ -153,7 +153,7 @@ def main(screenshot=False):
     #problem_filenames = sorted(os.listdir(openrave_directory))
     #problem_filenames = ['{}.json'.format(name) for name in FFROB]
     #problem_filenames = ['sink_stove_4_30.json'] # 'dinner.json' | 'simple.json'
-    problem_filenames = ['simple.json'] # 'dinner.json' | 'simple.json'
+    problem_filenames = ['sink_stove_2_0.json'] # 'dinner.json' | 'simple.json'
 
     # Mac width/height
     #width = 2560

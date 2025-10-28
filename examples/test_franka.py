@@ -4,7 +4,7 @@ from __future__ import print_function
 
 import pybullet as p
 
-from pybullet_tools.utils import add_data_path, connect, dump_body, disconnect, wait_for_user, \
+from pybullet_tools.utils import add_data_path, connect, dump_body, disconnect, wait_for_user, wait_for_duration, \
     get_movable_joints, get_sample_fn, set_joint_positions, get_joint_name, LockRenderer, link_from_name, get_link_pose, \
     multiply, Pose, Point, interpolate_poses, HideOutput, draw_pose, set_camera_pose, load_pybullet, \
     assign_link_colors, add_line, point_from_pose, remove_handles, BLUE, INF
@@ -49,7 +49,7 @@ def test_ik(robot, info, tool_link, tool_pose):
                                           max_distance=INF, max_time=10, max_candidates=INF):
         # TODO: profile
         set_joint_positions(robot, ik_joints, conf)
-        wait_for_user()
+        wait_for_duration(0.001)
 
 #####################################
 
@@ -85,8 +85,7 @@ def main():
         set_joint_positions(robot, joints, conf)
         wait_for_user()
         #test_ik(robot, info, tool_link, get_link_pose(robot, tool_link))
-        test_retraction(robot, info, tool_link, use_pybullet=False,
-                        max_distance=0.1, max_time=0.05, max_candidates=100)
+        test_retraction(robot, info, tool_link, use_pybullet=False, max_distance=0.1, max_time=0.05, max_candidates=100)
     disconnect()
 
 if __name__ == '__main__':
