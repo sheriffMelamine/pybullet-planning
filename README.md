@@ -9,6 +9,10 @@ This is a **forked repository**. For a detailed overview of the repository files
 This project focuses on developing a **heterogeneous multi-robot system** for **collaborative long-horizon task planning**.  
 The objective is to enable coordinated task execution among robots with different capabilities within a shared simulation environment.
 
+<p align="center">
+  <img src="images/hetero.gif" alt="Heterogeneous Multi-Robot Simulation" width="600"/>
+</p>
+
 ---
 
 ### Test Environment: Serial Execution
