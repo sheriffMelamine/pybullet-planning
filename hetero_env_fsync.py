@@ -9,9 +9,9 @@ from pybullet_tools.pr2_utils import (
 )
 from pybullet_tools.utils import (
     connect, disconnect, add_data_path, load_model, load_pybullet, set_pose, assign_link_colors,
-    plan_joint_motion, set_joint_positions, get_pose, get_link_pose, multiply, Pose, stable_z,
+    plan_joint_motion, set_joint_positions, get_pose, get_link_pose, multiply, Pose, stable_z, enable_gravity,
     get_joint_positions, quat_from_euler, Euler, PI, HideOutput, LockRenderer,joints_from_names,
-    wait_if_gui, add_fixed_constraint, remove_constraint, joint_from_name, RGBA, interpolate,
+    wait_if_gui, add_fixed_constraint, remove_constraint, joint_from_name, RGBA, interpolate, set_color,
     link_from_name, approximate_as_prism, interpolate_poses, create_box, get_max_limit, get_min_limit
 )
 from pybullet_tools.ikfast.franka_panda.ik import PANDA_INFO, FRANKA_URDF
@@ -42,7 +42,7 @@ class Franka:
 
     def move_to_pose(self, target_pose):
         tool_pose = get_link_pose(self.robot, self.tool_link)
-        pose_path = interpolate_poses(tool_pose, target_pose, pos_step_size=0.015)
+        pose_path = interpolate_poses(tool_pose, target_pose, pos_step_size=0.012)
         for pose in pose_path:
             conf = next(either_inverse_kinematics(
                 self.robot, self.info, self.tool_link, pose,
@@ -53,34 +53,38 @@ class Franka:
                 print('Unable to find IK solution for Franka.')
                 return
             set_joint_positions(self.robot, self.ik_joints, conf)
-            run_simulation()
+            yield
     
     def open_gripper(self):
         open_conf = [get_max_limit(self.robot, joint) for joint in self.gripper_joints]
         set_joint_positions(self.robot, self.gripper_joints, open_conf)
-        run_simulation()
+        yield
 
     def close_gripper(self):
         close_conf = [get_min_limit(self.robot, joint) for joint in self.gripper_joints]
         set_joint_positions(self.robot, self.gripper_joints, close_conf)
-        run_simulation()
+        yield
     
     def grasp_gripper(self, obj):
         if self.constraint is None:
             close_until_collision(self.robot, self.gripper_joints, bodies=[obj])
-            run_simulation(500)
+            yield
+            yield
             self.constraint = add_fixed_constraint(obj, self.robot, self.tool_link)
-            run_simulation(500)
+            yield
+            yield
         else:
             print('Franka: Gripper not free')
 
     def release_gripper(self):
         if self.constraint is not None:
-            run_simulation(500)
+            yield
+            yield
             remove_constraint(self.constraint)
             self.constraint = None
-            self.open_gripper()
-            run_simulation(500)
+            yield from self.open_gripper()
+            yield
+            yield
         else:
             print('Franka: Gripper is empty')
 
@@ -89,9 +93,9 @@ class Franka:
         joint_path =  interpolate(current_conf, self.stable_config, num_steps=num_steps)
         for conf in joint_path:
             set_joint_positions(self.robot, self.ik_joints, conf)
-            run_simulation()
+            yield
         if close_grip is True:
-            self.close_gripper()
+            yield from self.close_gripper()
     
     def get_grasp_pose(self, obj):
         body_pose = get_pose(obj)
@@ -110,29 +114,32 @@ class Franka:
         return pick_pose
     
     def pick_up(self, obj):
-        self.open_gripper()
+        yield from self.open_gripper()
         franka_pick_pose = self.get_grasp_pose(obj)
         franka_lift_pose = self.get_lift_pose(franka_pick_pose)
-        self.move_to_pose(franka_lift_pose)
-        run_simulation(500)
-        self.move_to_pose(franka_pick_pose)
-        self.grasp_gripper(obj)
-        self.move_to_pose(franka_lift_pose)
+        yield from self.move_to_pose(franka_lift_pose)
+        yield
+        yield
+        yield from self.move_to_pose(franka_pick_pose)
+        yield from self.grasp_gripper(obj)
+        yield from self.move_to_pose(franka_lift_pose)
 
     def place(self, obj, location, surface):
         franka_place_pose = self.get_place_pose(obj, location, surface)
         franka_lift_pose = self.get_lift_pose(franka_place_pose)
-        self.move_to_pose(franka_place_pose)
-        self.release_gripper()
-        self.move_to_pose(franka_lift_pose)
+        yield from self.move_to_pose(franka_place_pose)
+        yield from self.release_gripper()
+        yield from self.move_to_pose(franka_lift_pose)
 
     def pick_and_place(self, obj, place_loc, place_surf):
-        self.pick_up(obj)
-        run_simulation(500)
-        self.reset_arm(close_grip=False)
-        run_simulation(500)
-        self.place(obj, place_loc, place_surf)
-        self.reset_arm()
+        yield from self.pick_up(obj)
+        yield
+        yield
+        yield from self.reset_arm(close_grip=False)
+        yield
+        yield
+        yield from self.place(obj, place_loc, place_surf)
+        yield from self.reset_arm()
         
 
 class PR2:
@@ -144,14 +151,18 @@ class PR2:
             set_joint_positions(self.robot, joints_from_names(self.robot,PR2_GROUPS['right_arm']), rightarm_from_leftarm(COMPACT_LEFT_ARM))
             self.select_arm(planning_arm)
             self.constraint = None
+            self.gripper_joints = get_gripper_joints(self.robot, self.arm)
 
     def select_arm(self, planning_arm):
         self.arm = planning_arm
         self.tool_link = get_gripper_link(self.robot, self.arm)
         self.arm_info = get_if_info(self.arm)
         self.ik_joints = get_ik_joints(self.robot, self.arm_info, self.tool_link)
+        self.gripper_joints = get_gripper_joints(self.robot, self.arm)
 
     def plan_base_motion(self, goal_conf, obstacles=[]):
+        grip_conf = get_joint_positions(self.robot, self.gripper_joints)
+        arm_conf = get_joint_positions(self.robot, self.ik_joints)
         disabled = get_disabled_collisions(self.robot)
         base_joints = [joint_from_name(self.robot, name) for name in PR2_GROUPS['base']]
         with LockRenderer():
@@ -162,11 +173,13 @@ class PR2:
             return
         for q in base_path:
             set_joint_positions(self.robot, base_joints[:2], q)
-            run_simulation()
+            set_joint_positions(self.robot, self.gripper_joints, grip_conf)
+            set_joint_positions(self.robot, self.ik_joints, arm_conf)
+            yield
 
     def arm_motion(self, target_pose):
         tool_pose = get_link_pose(self.robot, self.tool_link)
-        pose_path = interpolate_poses(tool_pose, target_pose, pos_step_size=0.025)
+        pose_path = interpolate_poses(tool_pose, target_pose, pos_step_size=0.015)
         for pose in pose_path:
             conf = next(either_inverse_kinematics(
                 self.robot, self.arm_info, self.tool_link, pose, fixed_joints=[self.ik_joints[0]],
@@ -177,33 +190,36 @@ class PR2:
                 print("PR2: IK not found")
                 return
             set_joint_positions(self.robot, self.ik_joints, conf)
-            run_simulation()
+            yield
 
     def open_gripper(self):
         open_arm(self.robot, self.arm)
-        run_simulation()
+        yield
     
     def close_gripper(self):
         close_arm(self.robot, self.arm)
-        run_simulation()
+        yield
 
     def grasp_gripper(self, obj):
         if self.constraint is None:
-            gjoints = get_gripper_joints(self.robot, self.arm)
-            close_until_collision(self.robot, gjoints, bodies=[obj])
-            run_simulation(500)
+            close_until_collision(self.robot, self.gripper_joints, bodies=[obj])
+            yield
+            yield
             self.constraint = add_fixed_constraint(obj, self.robot, get_gripper_link(self.robot, self.arm))
-            run_simulation(500)
+            yield
+            yield
         else:
             print("PR2: Gripper not free")
 
     def release_gripper(self):
         if self.constraint is not None:
-            run_simulation(500)
+            yield
+            yield
             remove_constraint(self.constraint)
             self.constraint = None
-            self.open_gripper()
-            run_simulation(500)
+            yield from self.open_gripper()
+            yield
+            yield
         else:
             print("PR2: Gripper is empty")
 
@@ -214,14 +230,15 @@ class PR2:
         joint_path =  interpolate(current_conf, goal_conf, num_steps=num_steps)
         for conf in joint_path:
             set_joint_positions(self.robot, self.ik_joints[1:], conf)
-            run_simulation()
-        self.close_gripper()
+            yield
+        yield from self.close_gripper()
+        
 
     
     def get_grasp_pose(self, obj):
         body_pose = get_pose(obj)
         center, (w, length, height) = approximate_as_prism(obj, body_pose= body_pose)
-        pick_pose = multiply((center,body_pose[1]), Pose(point=[0.045 - 0.5 * length, 0., 0.5 * height - 0.04]))
+        pick_pose = multiply((center,body_pose[1]), Pose(point=[0.045 - 0.5 * length, 0., 0.5 * height - 0.02]))
         return pick_pose
     
     def grasp_approach_base(self, place_mark):
@@ -229,39 +246,44 @@ class PR2:
         offset =  -0.2 if self.arm == 'left' else 0.2
         return tuple(map(lambda x, y: x + y, (-0.85,offset,0.), tuple(place_mark[:2]) + (base_pose[0][2],)))
     
-    def get_lift_pose(self, obj):
-        body_pose = get_pose(obj)
-        return multiply(body_pose, Pose(point=[-0.02, 0.0, 0.14]))
+    def get_lift_pose(self, grasp_pose):
+        return multiply(grasp_pose, Pose(point=[-0.02, 0.0, 0.14]))
     
     def get_place_pose(self, obj, place_mark, place_surface):
         place_mark = tuple(place_mark[:2]) + (stable_z(obj, place_surface),)
         body_pose = get_pose(obj)
         center, (w, length, height) = approximate_as_prism(obj, body_pose= (place_mark,body_pose[1]))
-        pick_pose = multiply((center,body_pose[1]), Pose(point=[0.045 - 0.5 * length, 0., 0.5 * height - 0.04]))
+        pick_pose = multiply((center,body_pose[1]), Pose(point=[0.045 - 0.5 * length, 0., 0.5 * height - 0.02]))
         return pick_pose
     
     def pick_up(self, obj):
         grasp_pose = self.get_grasp_pose(obj)
-        self.open_gripper()
-        self.arm_motion(grasp_pose)
-        self.grasp_gripper(obj)
-        lift_pose = self.get_lift_pose(obj)
-        self.arm_motion(lift_pose)
+        lift_pose = self.get_lift_pose(grasp_pose)
+        yield from self.open_gripper()
+        yield from self.arm_motion(lift_pose)
+        yield
+        yield
+        yield from self.arm_motion(grasp_pose)
+        yield from self.grasp_gripper(obj)
+        yield from self.arm_motion(lift_pose)
 
     def place(self, obj, location, surface):
         place_pose = self.get_place_pose(obj, location, surface)
-        self.arm_motion(place_pose)
-        self.release_gripper()
+        lift_pose = self.get_lift_pose(place_pose)
+        yield from self.arm_motion(place_pose)
+        yield from self.release_gripper()
+        yield from self.arm_motion(lift_pose)
+
 
     def pick_and_place(self, obj, place_loc, place_surf, obstacles=[]):
         obj_pose = get_pose(obj)
         goal1 = self.grasp_approach_base(obj_pose[0])
         goal2 = self.grasp_approach_base(place_loc)
-        self.plan_base_motion(goal1, obstacles=obstacles)
-        self.pick_up(obj)
-        self.plan_base_motion(goal2, obstacles=obstacles)
-        self.place(obj, place_loc, place_surf)
-        self.reset_arm()
+        yield from self.plan_base_motion(goal1, obstacles=obstacles)
+        yield from self.pick_up(obj)
+        yield from self.plan_base_motion(goal2, obstacles=obstacles)
+        yield from self.place(obj, place_loc, place_surf)
+        yield from self.reset_arm()
 
 
 class Env:
@@ -270,14 +292,17 @@ class Env:
         add_data_path()
         self._setup_scene()
         self.franka = Franka(self.franka_pose)
-        self.pr2 = PR2(self.pr2_pose, 'right')
+        self.pr2 = PR2(self.pr2_pose, 'left')
+        self.franka_done = False
+        self.pr2_done = False
+        self.switch_flag = False
 
     def _setup_scene(self):
         self.plane = p.loadURDF("plane.urdf")
 
         self.franka_pose = Pose(point=[1.8, 3.5, 0.625])
         self.pr2_pose = Pose()
-        table1_pose = ([1., 0., 0.], quat_from_euler(Euler(yaw=PI / 2)))
+        table1_pose = ([2.5, 1.2, 0.], quat_from_euler(Euler(yaw=PI / 2)))
         table2_pose = ([2., 3., 0.], quat_from_euler(Euler(yaw=PI / 2)))
         self.common_place_location = (1.8, 3.0, 0.625)
 
@@ -297,39 +322,77 @@ class Env:
 
         self.franka_place_location, _ = plate_pose
 
-        block1 = create_box(0.05, 0.05, 0.05, mass=0.1, color=RGBA(0.7,0.7,0.2,1.))
-        set_pose(block1, Pose(point=[0.9,-0.3,stable_z(block1, table1)]))
+        block1 = load_pybullet('models/drake/objects/block_for_pick_and_place_small.urdf', fixed_base=False)
+        set_color(block1, RGBA(0.7,0.7,0.2,1.))
+        set_pose(block1, Pose(point=[2.3,1.4,stable_z(block1, table1)]))
         self.block1 = block1
 
-        block2 = create_box(0.05, 0.05, 0.05, mass=0.1, color=RGBA(0.6,0.6,0.6,1.))
-        set_pose(block2, Pose(point=[0.9,0., stable_z(block2, table1)]))
+        block2 = load_pybullet('models/drake/objects/block_for_pick_and_place_small.urdf', fixed_base=False)
+        set_color(block2, RGBA(0.6,0.6,0.6,1.))
+        set_pose(block2, Pose(point=[2.1,1., stable_z(block2, table1)]))
         self.block2 = block2
 
-        block3 = create_box(0.05, 0.05, 0.05, mass=0.1, color=RGBA(0.7,0.2,0.7,1.))
-        set_pose(block3, Pose(point=[0.9,0.3,stable_z(block1, table1)]))
+        block3 = load_pybullet('models/drake/objects/block_for_pick_and_place_small.urdf', fixed_base=False)
+        set_color(block3, RGBA(0.1,0.5,0.1,1.))
+        set_pose(block3, Pose(point=[2.2,0.8,stable_z(block3, table1)]))
         self.block3 = block3
+
 
         self.cup, self.table1, self.table2, self.plate = cup, table1, table2, plate
 
-    def execute_task(self):
-        pr2, franka, cup, table1, table2, plane = self.pr2, self.franka, self.cup, self.table1, self.table2, self.plane
+    
+    def execute_robot1(self):
+        pr2, franka, table1, table2, plane = self.pr2, self.franka, self.table1, self.table2, self.plane
+        block1, block2, block3, cup = self.block1, self.block2, self.block3, self.cup
+        
+        yield from pr2.pick_and_place(block1, self.common_place_location, table2, 
+                                              obstacles=[table1, table2, franka.robot, plane, block2, block3, cup])
+        self.switch_flag = True  
+        yield from pr2.pick_and_place(block2, self.common_place_location, table2, 
+                                          obstacles=[table1, table2, franka.robot, plane, block3, cup])
+        self.switch_flag = True    
+        yield from pr2.pick_and_place(block3, self.common_place_location, table2, 
+                                          obstacles=[table1, table2, franka.robot, plane, cup])
+        self.switch_flag = True
+        self.pr2_done = True
+        yield
+            
 
-        pr2.pick_and_place(cup, self.common_place_location, table2, obstacles=[table1, table2, franka.robot, plane])
+        
+    def execute_robot2(self):
+        franka, table2 = self.franka, self.table2
+        block1, block2, block3 = self.block1, self.block2, self.block3
 
-        franka.pick_and_place(cup, self.franka_place_location, table2)
-
-        print("Task execution complete.")
-
+        yield from franka.pick_and_place(block1, self.franka_place_location, table2)
+        self.switch_flag=False
+        yield from franka.pick_and_place(block2, self.franka_place_location, block1)
+        self.switch_flag=False
+        yield from franka.pick_and_place(block3, self.franka_place_location, block2)
+        
+        self.franka_done = True
+        yield
 
 
 def main():
     env = Env(use_gui=True)
     
+
+    robot1 = env.execute_robot1()
+    robot2 = env.execute_robot2()
+    
     run_simulation(500)
 
     wait_if_gui('Start?')
     
-    env.execute_task()
+    while not env.franka_done or not env.pr2_done:
+
+        next(robot1, None)
+        if env.switch_flag:
+            next(robot2, None)
+
+        run_simulation()
+
+    print('Task Completed')    
 
     run_simulation(500)
 
