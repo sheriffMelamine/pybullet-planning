@@ -1,7 +1,7 @@
 # pybullet-planning
 
 This is a **forked repository**. For a detailed overview of the repository structure and installation instructions, please refer to the original repository:  
-➡️ [pybullet_planning](https://github.com/caelan/pybullet_planning)
+➡️ [pybullet-planning](https://github.com/caelan/pybullet-planning)
 
 ---
 
