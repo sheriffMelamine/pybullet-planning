@@ -15,25 +15,25 @@ The objective is to enable coordinated task execution among robots with differen
 
 ---
 
-### Test Environment: Asynchronous Execution
+### Test Environment: Single Execution
 
 In this setup, a set of tasks are done by the robots one by one, and none of the robots can work concurrently.   
 
 To run the test simulation of the system environment with asynchronous task execution, execute the following command in the `pybullet_planning` directory:
 
 ```bash
-python3 -m hetero_env_async
+python3 -m hetero_env_single
 ```
 ---
 
-### Test Environment: Fake Synchronous Execution
+### Test Environment: Concurrent Execution via Python Generator Implementation
 
-In this setup, both robots can do tasks in parallel, though it is not true sync, as the robots' steps are iterated in a loop separately. By using python generators, it was possible to create this fake parallel mechanism.   
+In this setup, both robots can do tasks in parallel, though it is not true sync, as the robots' steps are iterated in a loop separately. By using python generators, it was possible to create this parallel task scheduling mechanism.   
 
 To run the test simulation of the system environment with such synchronous task execution, execute the following command in the `pybullet_planning` directory:
 
 ```bash
-python3 -m hetero_env_fsync
+python3 -m hetero_env_gencon
 ```
 ---
 *Additional Modules to be added later...*

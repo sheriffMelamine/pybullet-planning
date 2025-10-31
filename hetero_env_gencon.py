@@ -19,7 +19,7 @@ from pybullet_tools.ikfast.ikfast import get_ik_joints, either_inverse_kinematic
 from pybullet_tools.ikfast.pr2.ik import get_if_info
 
 
-def run_simulation(loop=200):
+def run_simulation(loop=100):
     for _ in range(loop):
         p.stepSimulation()
 
