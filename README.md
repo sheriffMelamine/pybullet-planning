@@ -1,13 +1,14 @@
 # pybullet-planning
 
-This is a **forked repository**. For a detailed overview of the repository files and installation instructions, please refer to the original repository: [pybullet_planning](https://github.com/caelan/pybullet_planning).
+This is a **forked repository**. For a detailed overview of the repository structure and installation instructions, please refer to the original repository:  
+➡️ [pybullet_planning](https://github.com/caelan/pybullet_planning)
 
 ---
 
 ## Heterogeneous Multi-Robot System
 
-This project focuses on developing a **heterogeneous multi-robot system** for **collaborative long-horizon task planning**.  
-The objective is to enable coordinated task execution among robots with different capabilities within a shared simulation environment.
+This project explores a **heterogeneous multi-robot framework** for **collaborative long-horizon task planning** and execution.  
+The system enables coordinated workflows between robots with different capabilities in a unified PyBullet simulation environment.
 
 <p align="center">
   <img src="images/hetero.gif" alt="Heterogeneous Multi-Robot Simulation" width="600"/>
@@ -15,35 +16,56 @@ The objective is to enable coordinated task execution among robots with differen
 
 ---
 
-### Test Environment: Single Execution
+### ✅ Test Environment: Single Execution
 
-In this setup, a set of tasks are done by the robots one by one, and none of the robots can work concurrently. As the timestep of simulation is controlled by the task itself (i.e. when robots are idle, the simulation will pause), it does not provide practical simulation scenario. 
+In this configuration, tasks are executed **strictly one after another**, meaning only one robot is active at any given time.  
+The simulation timestep is controlled by the task execution itself — when robots are idle, the physics engine effectively pauses.  
+This leads to a **deterministic but not time-realistic** simulation, making it useful for verifying logic flow and debugging foundational behaviors, but not ideal for practical collaborative scenarios.
 
-To run the test simulation of the system environment with such task execution, execute the following command in the `pybullet_planning` directory:
+This mode represents the simplest execution structure and establishes baseline behavior before introducing concurrency.
+
+To run:
 
 ```bash
 python3 -m hetero_env_single
-```
+````
+
 ---
 
-### Test Environment: Concurrent Execution via Python Generator Implementation
+### ✅ Test Environment: Concurrent Execution via Python Generator Implementation
 
-In this setup, both robots can do tasks in parallel, though it is not true sync, as the robots' steps are iterated in a loop separately. By using python generators, it was possible to create this parallel task scheduling mechanism. Here, the simulation time control is less compared to the single execution, though it is still somewhat controlled by the main loop and the logic structure.
+In this mode, both robots can operate **in parallel**, but concurrency is achieved through Python generators (`yield` / `yield from`), creating a cooperative multitasking structure.
+Each robot progresses in small steps as control is yielded back and forth, resulting in **interleaved task execution**.
+While this achieves a form of concurrency, the main loop still influences timing and task switching, and therefore the simulation is not fully independent of task control flow.
 
-To run the test simulation of the system environment with such task execution, execute the following command in the `pybullet_planning` directory:
+This approach offers more dynamic behavior than the single-execution version and demonstrates a clear improvement in realism and responsiveness, though it still maintains some logical coupling to the scheduling loop.
+
+To run:
 
 ```bash
 python3 -m hetero_env_gencon
 ```
+
 ---
 
-### Test Environment: Concurrent Execution using `asyncio`
+### ✅ Test Environment: Concurrent Execution using `asyncio`
 
-In this setup, both robots do task in parallel asynchronously, and here the simulation stepping is fully neutral of the control of the task itself, as it runs independently. The physics simulation, and the individual robot tasks all are handled by `asyncio`, and the main loop is also free of logic structure of the task which was necessary in previous case. Therefore, this is more practical simulation environment compared to the previous two.
+This mode provides **fully asynchronous execution** using Python’s `asyncio` framework.
+Each robot, along with the physics simulation, runs as an independent asynchronous task.
+This decouples simulation time from task logic — robots operate concurrently without needing to yield control manually, and the simulation continues to progress regardless of individual task scheduling.
 
-To run the test simulation of the system environment with such task execution, execute the following command in the `pybullet_planning` directory:
+This design enables more realistic and scalable multi-robot interaction, where timing, motion, and task overlap more closely resemble real robotic systems.
+It is the most flexible and practical setup among the three, well-suited for complex multi-robot workflows and long-horizon coordinated planning.
+
+To run:
+
 ```bash
 python3 -m hetero_env_asyncio
 ```
+
 ---
-*Additional Modules to be added later...*
+
+*More modules & demos will be added soon…*
+
+
+
