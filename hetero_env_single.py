@@ -19,7 +19,7 @@ from pybullet_tools.ikfast.ikfast import get_ik_joints, either_inverse_kinematic
 from pybullet_tools.ikfast.pr2.ik import get_if_info
 
 
-def run_simulation(loop=200):
+def run_simulation(loop=80):
     for _ in range(loop):
         p.stepSimulation()
 
@@ -68,19 +68,19 @@ class Franka:
     def grasp_gripper(self, obj):
         if self.constraint is None:
             close_until_collision(self.robot, self.gripper_joints, bodies=[obj])
-            run_simulation(500)
+            run_simulation(200)
             self.constraint = add_fixed_constraint(obj, self.robot, self.tool_link)
-            run_simulation(500)
+            run_simulation(200)
         else:
             print('Franka: Gripper not free')
 
     def release_gripper(self):
         if self.constraint is not None:
-            run_simulation(500)
+            run_simulation(200)
             remove_constraint(self.constraint)
             self.constraint = None
             self.open_gripper()
-            run_simulation(500)
+            run_simulation(160)
         else:
             print('Franka: Gripper is empty')
 
@@ -114,7 +114,7 @@ class Franka:
         franka_pick_pose = self.get_grasp_pose(obj)
         franka_lift_pose = self.get_lift_pose(franka_pick_pose)
         self.move_to_pose(franka_lift_pose)
-        run_simulation(500)
+        run_simulation(200)
         self.move_to_pose(franka_pick_pose)
         self.grasp_gripper(obj)
         self.move_to_pose(franka_lift_pose)
@@ -128,9 +128,9 @@ class Franka:
 
     def pick_and_place(self, obj, place_loc, place_surf):
         self.pick_up(obj)
-        run_simulation(500)
+        run_simulation(200)
         self.reset_arm(close_grip=False)
-        run_simulation(500)
+        run_simulation(200)
         self.place(obj, place_loc, place_surf)
         self.reset_arm()
         
@@ -196,19 +196,19 @@ class PR2:
     def grasp_gripper(self, obj):
         if self.constraint is None:
             close_until_collision(self.robot, self.gripper_joints, bodies=[obj])
-            run_simulation(500)
+            run_simulation(200)
             self.constraint = add_fixed_constraint(obj, self.robot, get_gripper_link(self.robot, self.arm))
-            run_simulation(500)
+            run_simulation(200)
         else:
             print("PR2: Gripper not free")
 
     def release_gripper(self):
         if self.constraint is not None:
-            run_simulation(500)
+            run_simulation(200)
             remove_constraint(self.constraint)
             self.constraint = None
             self.open_gripper()
-            run_simulation(500)
+            run_simulation(200)
         else:
             print("PR2: Gripper is empty")
 
@@ -250,7 +250,7 @@ class PR2:
         lift_pose = self.get_lift_pose(grasp_pose)
         self.open_gripper()
         self.arm_motion(lift_pose)
-        run_simulation(500)
+        run_simulation(200)
         self.arm_motion(grasp_pose)
         self.grasp_gripper(obj)
         self.arm_motion(lift_pose)
@@ -349,13 +349,13 @@ class Env:
 def main():
     env = Env(use_gui=True)
     
-    run_simulation(500)
+    run_simulation(200)
 
     wait_if_gui('Start?')
     
     env.execute_task()
 
-    run_simulation(500)
+    run_simulation(200)
 
     wait_if_gui('Finish?')
     disconnect()

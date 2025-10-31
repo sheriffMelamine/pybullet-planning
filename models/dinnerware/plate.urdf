@@ -10,12 +10,12 @@
       </geometry>
     </visual>
 
-    <collision>  <!-- bottom -->
+    <!--collision>  <-- bottom --
       <geometry>
         <cylinder radius="0.05" length="0.005"/>
       </geometry>
       <origin rpy="0 0 0" xyz="0 0 0.0025"/>
-    </collision>
+    </collision-->
 
     <collision>
       <geometry>

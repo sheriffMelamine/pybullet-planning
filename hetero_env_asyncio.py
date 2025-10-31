@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 from __future__ import print_function
-import pybullet as p
+
+import asyncio
+import pybullet as p # type: ignore
 
 from pybullet_tools.pr2_utils import (
     DRAKE_PR2_URDF, PR2_GROUPS, open_arm, close_until_collision,
@@ -18,11 +20,7 @@ from pybullet_tools.ikfast.franka_panda.ik import PANDA_INFO, FRANKA_URDF
 from pybullet_tools.ikfast.ikfast import get_ik_joints, either_inverse_kinematics
 from pybullet_tools.ikfast.pr2.ik import get_if_info
 
-
-def run_simulation(loop=80):
-    for _ in range(loop):
-        p.stepSimulation()
-
+TIME_STEP = 1/500.
 
 class Franka:
     def __init__(self, pose):
@@ -40,7 +38,7 @@ class Franka:
             self.constraint = None
         
 
-    def move_to_pose(self, target_pose):
+    async def move_to_pose(self, target_pose):
         tool_pose = get_link_pose(self.robot, self.tool_link)
         pose_path = interpolate_poses(tool_pose, target_pose, pos_step_size=0.012)
         for pose in pose_path:
@@ -53,49 +51,50 @@ class Franka:
                 print('Unable to find IK solution for Franka.')
                 return
             set_joint_positions(self.robot, self.ik_joints, conf)
-            yield
+            await asyncio.sleep(TIME_STEP * 20.)
     
-    def open_gripper(self):
+    async def open_gripper(self):
         open_conf = [get_max_limit(self.robot, joint) for joint in self.gripper_joints]
         set_joint_positions(self.robot, self.gripper_joints, open_conf)
-        yield
+        await asyncio.sleep(TIME_STEP * 20.)
 
-    def close_gripper(self):
+    async def close_gripper(self):
         close_conf = [get_min_limit(self.robot, joint) for joint in self.gripper_joints]
         set_joint_positions(self.robot, self.gripper_joints, close_conf)
-        yield
+        await asyncio.sleep(TIME_STEP * 20.)
     
-    def grasp_gripper(self, obj):
+    async def grasp_gripper(self, obj):
         if self.constraint is None:
             close_until_collision(self.robot, self.gripper_joints, bodies=[obj])
-            yield
-            yield
+            await asyncio.sleep(TIME_STEP * 100.)
             self.constraint = add_fixed_constraint(obj, self.robot, self.tool_link)
-            yield
-            yield
+            await asyncio.sleep(TIME_STEP * 100.)
         else:
             print('Franka: Gripper not free')
 
-    def release_gripper(self):
+    async def release_gripper(self, obj):
         if self.constraint is not None:
-            yield
-            yield
+            placed = get_pose(obj)
+            await asyncio.sleep(TIME_STEP * 100.)
             remove_constraint(self.constraint)
+            set_pose(obj, placed)
             self.constraint = None
-            yield from self.open_gripper()
-            yield
-            yield
+            await asyncio.sleep(TIME_STEP * 100.)
+            set_pose(obj, placed)
+            await self.open_gripper()
+            set_pose(obj, placed)
+            await asyncio.sleep(TIME_STEP * 100.)
         else:
             print('Franka: Gripper is empty')
 
-    def reset_arm(self, num_steps=50, close_grip=True):
+    async def reset_arm(self, num_steps=50, close_grip=True):
         current_conf = get_joint_positions(self.robot, self.ik_joints)
         joint_path =  interpolate(current_conf, self.stable_config, num_steps=num_steps)
         for conf in joint_path:
             set_joint_positions(self.robot, self.ik_joints, conf)
-            yield
+            await asyncio.sleep(TIME_STEP * 20.)
         if close_grip is True:
-            yield from self.close_gripper()
+            await self.close_gripper()
     
     def get_grasp_pose(self, obj):
         body_pose = get_pose(obj)
@@ -113,33 +112,30 @@ class Franka:
         pick_pose = multiply((center,body_pose[1]), Pose(point=[0, 0, 0.5 * height - 0.02]), Pose(euler=[0., PI, 0.]),Pose(euler=[0., 0., PI/2]))
         return pick_pose
     
-    def pick_up(self, obj):
-        yield from self.open_gripper()
+    async def pick_up(self, obj):
+        await self.open_gripper()
         franka_pick_pose = self.get_grasp_pose(obj)
         franka_lift_pose = self.get_lift_pose(franka_pick_pose)
-        yield from self.move_to_pose(franka_lift_pose)
-        yield
-        yield
-        yield from self.move_to_pose(franka_pick_pose)
-        yield from self.grasp_gripper(obj)
-        yield from self.move_to_pose(franka_lift_pose)
+        await self.move_to_pose(franka_lift_pose)
+        await asyncio.sleep(TIME_STEP * 100.)
+        await self.move_to_pose(franka_pick_pose)
+        await self.grasp_gripper(obj)
+        await self.move_to_pose(franka_lift_pose)
 
-    def place(self, obj, location, surface):
+    async def place(self, obj, location, surface):
         franka_place_pose = self.get_place_pose(obj, location, surface)
         franka_lift_pose = self.get_lift_pose(franka_place_pose)
-        yield from self.move_to_pose(franka_place_pose)
-        yield from self.release_gripper()
-        yield from self.move_to_pose(franka_lift_pose)
+        await self.move_to_pose(franka_place_pose)
+        await self.release_gripper(obj)
+        await self.move_to_pose(franka_lift_pose)
 
-    def pick_and_place(self, obj, place_loc, place_surf):
-        yield from self.pick_up(obj)
-        yield
-        yield
-        yield from self.reset_arm(close_grip=False)
-        yield
-        yield
-        yield from self.place(obj, place_loc, place_surf)
-        yield from self.reset_arm()
+    async def pick_and_place(self, obj, place_loc, place_surf):
+        await self.pick_up(obj)
+        await asyncio.sleep(TIME_STEP * 100.)
+        await self.reset_arm(close_grip=False)
+        await asyncio.sleep(TIME_STEP * 100.)
+        await self.place(obj, place_loc, place_surf)
+        await self.reset_arm()
         
 
 class PR2:
@@ -160,7 +156,7 @@ class PR2:
         self.ik_joints = get_ik_joints(self.robot, self.arm_info, self.tool_link)
         self.gripper_joints = get_gripper_joints(self.robot, self.arm)
 
-    def plan_base_motion(self, goal_conf, obstacles=[]):
+    async def plan_base_motion(self, goal_conf, obstacles=[]):
         grip_conf = get_joint_positions(self.robot, self.gripper_joints)
         arm_conf = get_joint_positions(self.robot, self.ik_joints)
         disabled = get_disabled_collisions(self.robot)
@@ -175,9 +171,9 @@ class PR2:
             set_joint_positions(self.robot, base_joints[:2], q)
             set_joint_positions(self.robot, self.gripper_joints, grip_conf)
             set_joint_positions(self.robot, self.ik_joints, arm_conf)
-            yield
+            await asyncio.sleep(TIME_STEP * 20.)
 
-    def arm_motion(self, target_pose):
+    async def arm_motion(self, target_pose):
         tool_pose = get_link_pose(self.robot, self.tool_link)
         pose_path = interpolate_poses(tool_pose, target_pose, pos_step_size=0.015)
         for pose in pose_path:
@@ -190,48 +186,50 @@ class PR2:
                 print("PR2: IK not found")
                 return
             set_joint_positions(self.robot, self.ik_joints, conf)
-            yield
+            await asyncio.sleep(TIME_STEP * 20.)
 
-    def open_gripper(self):
+    async def open_gripper(self):
         open_arm(self.robot, self.arm)
-        yield
+        await asyncio.sleep(TIME_STEP * 20.)
     
-    def close_gripper(self):
+    async def close_gripper(self):
         close_arm(self.robot, self.arm)
-        yield
+        await asyncio.sleep(TIME_STEP * 20.)
 
-    def grasp_gripper(self, obj):
+    async def grasp_gripper(self, obj):
         if self.constraint is None:
             close_until_collision(self.robot, self.gripper_joints, bodies=[obj])
-            yield
-            yield
+            await asyncio.sleep(TIME_STEP * 100.)
             self.constraint = add_fixed_constraint(obj, self.robot, get_gripper_link(self.robot, self.arm))
-            yield
-            yield
+            await asyncio.sleep(TIME_STEP * 100.)
         else:
             print("PR2: Gripper not free")
 
-    def release_gripper(self):
+    async def release_gripper(self, obj):
         if self.constraint is not None:
-            yield
-            yield
+            await asyncio.sleep(TIME_STEP * 100.)
+            placed = get_pose(obj)
             remove_constraint(self.constraint)
+            set_pose(obj, placed)
             self.constraint = None
-            yield from self.open_gripper()
-            yield
-            yield
+            await asyncio.sleep(TIME_STEP * 100.)
+            set_pose(obj, placed)
+            await self.open_gripper()
+            set_pose(obj, placed)
+            await asyncio.sleep(TIME_STEP * 100.)
+            
         else:
             print("PR2: Gripper is empty")
 
 
-    def reset_arm(self, num_steps=25):
+    async def reset_arm(self, num_steps=25):
         goal_conf = COMPACT_LEFT_ARM if self.arm == 'left' else rightarm_from_leftarm(COMPACT_LEFT_ARM)
         current_conf = get_joint_positions(self.robot, self.ik_joints[1:])
         joint_path =  interpolate(current_conf, goal_conf, num_steps=num_steps)
         for conf in joint_path:
             set_joint_positions(self.robot, self.ik_joints[1:], conf)
-            yield
-        yield from self.close_gripper()
+            await asyncio.sleep(TIME_STEP * 20.)
+        await self.close_gripper()
         
 
     
@@ -256,34 +254,33 @@ class PR2:
         pick_pose = multiply((center,body_pose[1]), Pose(point=[0.045 - 0.5 * length, 0., 0.5 * height - 0.02]))
         return pick_pose
     
-    def pick_up(self, obj):
+    async def pick_up(self, obj):
         grasp_pose = self.get_grasp_pose(obj)
         lift_pose = self.get_lift_pose(grasp_pose)
-        yield from self.open_gripper()
-        yield from self.arm_motion(lift_pose)
-        yield
-        yield
-        yield from self.arm_motion(grasp_pose)
-        yield from self.grasp_gripper(obj)
-        yield from self.arm_motion(lift_pose)
+        await self.open_gripper()
+        await self.arm_motion(lift_pose)
+        await asyncio.sleep(TIME_STEP * 100.)
+        await self.arm_motion(grasp_pose)
+        await self.grasp_gripper(obj)
+        await self.arm_motion(lift_pose)
 
-    def place(self, obj, location, surface):
+    async def place(self, obj, location, surface):
         place_pose = self.get_place_pose(obj, location, surface)
         lift_pose = self.get_lift_pose(place_pose)
-        yield from self.arm_motion(place_pose)
-        yield from self.release_gripper()
-        yield from self.arm_motion(lift_pose)
+        await self.arm_motion(place_pose)
+        await self.release_gripper(obj)
+        await self.arm_motion(lift_pose)
 
 
-    def pick_and_place(self, obj, place_loc, place_surf, obstacles=[]):
+    async def pick_and_place(self, obj, place_loc, place_surf, obstacles=[]):
         obj_pose = get_pose(obj)
         goal1 = self.grasp_approach_base(obj_pose[0])
         goal2 = self.grasp_approach_base(place_loc)
-        yield from self.plan_base_motion(goal1, obstacles=obstacles)
-        yield from self.pick_up(obj)
-        yield from self.plan_base_motion(goal2, obstacles=obstacles)
-        yield from self.place(obj, place_loc, place_surf)
-        yield from self.reset_arm()
+        await self.plan_base_motion(goal1, obstacles=obstacles)
+        await self.pick_up(obj)
+        await self.plan_base_motion(goal2, obstacles=obstacles)
+        await self.place(obj, place_loc, place_surf)
+        await self.reset_arm()
 
 
 class Env:
@@ -293,9 +290,7 @@ class Env:
         self._setup_scene()
         self.franka = Franka(self.franka_pose)
         self.pr2 = PR2(self.pr2_pose, 'left')
-        self.franka_done = False
-        self.pr2_done = False
-        self.switch_flag = False
+        self.all_done = False
 
     def _setup_scene(self):
         self.plane = p.loadURDF("plane.urdf")
@@ -340,65 +335,44 @@ class Env:
 
         self.cup, self.table1, self.table2, self.plate = cup, table1, table2, plate
 
+    async def run_simulation(self):
+        while self.all_done is False:
+            for _ in range(5):
+                p.stepSimulation()
+            await asyncio.sleep(TIME_STEP)
     
-    def execute_robot1(self):
+    async def execute_task(self):
+
         pr2, franka, table1, table2, plane = self.pr2, self.franka, self.table1, self.table2, self.plane
         block1, block2, block3, cup = self.block1, self.block2, self.block3, self.cup
-        
-        yield from pr2.pick_and_place(block1, self.common_place_location, table2, 
-                                              obstacles=[table1, table2, franka.robot, plane, block2, block3, cup])
-        self.switch_flag = True  
-        yield from pr2.pick_and_place(block2, self.common_place_location, table2, 
-                                          obstacles=[table1, table2, franka.robot, plane, block3, cup])
-        self.switch_flag = True    
-        yield from pr2.pick_and_place(block3, self.common_place_location, table2, 
-                                          obstacles=[table1, table2, franka.robot, plane, cup])
-        self.switch_flag = True
-        self.pr2_done = True
-        yield
-            
 
-        
-    def execute_robot2(self):
-        franka, table2 = self.franka, self.table2
-        block1, block2, block3 = self.block1, self.block2, self.block3
+        await pr2.pick_and_place(block1, self.common_place_location, table2, 
+                                obstacles=[table1, table2, franka.robot, plane, block2, block3, cup])
 
-        yield from franka.pick_and_place(block1, self.franka_place_location, table2)
-        self.switch_flag=False
-        yield from franka.pick_and_place(block2, self.franka_place_location, block1)
-        self.switch_flag=False
-        yield from franka.pick_and_place(block3, self.franka_place_location, block2)
-        
-        self.franka_done = True
-        yield
+        await asyncio.gather(franka.pick_and_place(block1, self.franka_place_location, table2),
+                            pr2.pick_and_place(block2, self.common_place_location, table2, 
+                                obstacles=[table1, table2, franka.robot, plane, block3, cup]))
+
+        await asyncio.gather(franka.pick_and_place(block2, self.franka_place_location, block1),
+                            pr2.pick_and_place(block3, self.common_place_location, table2, 
+                                obstacles=[table1, table2, franka.robot, plane, cup]))
+
+        await franka.pick_and_place(block3, self.franka_place_location, block2)
+
+        print("Task execution complete.")
+        self.all_done = True
 
 
-def main():
+async def main():
     env = Env(use_gui=True)
     
-
-    robot1 = env.execute_robot1()
-    robot2 = env.execute_robot2()
-    
-    run_simulation(500)
-
     wait_if_gui('Start?')
     
-    while not env.franka_done or not env.pr2_done:
-
-        next(robot1, None)
-        if env.switch_flag:
-            next(robot2, None)
-
-        run_simulation()
-
-    print('Task Completed')    
-
-    run_simulation(500)
+    await asyncio.gather(env.run_simulation(),env.execute_task())
 
     wait_if_gui('Finish?')
     disconnect()
 
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
