@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-from __future__ import print_function
+from time import perf_counter as timer
 import pybullet as p # type: ignore
 
 from pybullet_tools.pr2_utils import (
@@ -380,13 +380,17 @@ def main():
     env = Env(use_gui=True)
     
     run_simulation(200)
-
-    wait_if_gui('Start?')
     
-    env.execute_task()
+    wait_if_gui('Start?')
+    start_time = timer()
 
+    env.execute_task()
+    
+    end_time = timer()
     run_simulation(200)
 
+    
+    print(f"Execution time: {end_time - start_time :.4f} seconds")
     wait_if_gui('Finish?')
     disconnect()
 

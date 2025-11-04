@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-from __future__ import print_function
+from time import perf_counter as timer
 import pybullet as p                                                #type: ignore
 
 from pybullet_tools.pr2_utils import (
@@ -411,6 +411,7 @@ def main():
     run_simulation(500)
 
     wait_if_gui('Start?')
+    start_time = timer()
     
     while not env.franka_done or not env.pr2_done:
 
@@ -421,7 +422,8 @@ def main():
         run_simulation()
 
     print('Task Completed')    
-
+    end_time = timer()
+    print(f"Execution time: {end_time - start_time :.4f} seconds")
     run_simulation(500)
 
     wait_if_gui('Finish?')

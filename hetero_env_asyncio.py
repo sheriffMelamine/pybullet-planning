@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-from __future__ import print_function
+from time import perf_counter as timer
 
 import asyncio
 import pybullet as p # type: ignore
@@ -19,7 +19,7 @@ from pybullet_tools.ikfast.franka_panda.ik import PANDA_INFO, FRANKA_URDF
 from pybullet_tools.ikfast.ikfast import get_ik_joints, either_inverse_kinematics
 from pybullet_tools.ikfast.pr2.ik import get_if_info
 
-TIME_STEP = 1/500.
+TIME_STEP = 1/1000.
 
 class Franka:
     def __init__(self, pose):
@@ -65,20 +65,20 @@ class Franka:
     async def grasp_gripper(self, obj):
         if self.constraint is None:
             close_until_collision(self.robot, self.gripper_joints, bodies=[obj])
-            await asyncio.sleep(TIME_STEP * 100.)
+            await asyncio.sleep(TIME_STEP * 60.)
             self.constraint = add_fixed_constraint(obj, self.robot, self.tool_link)
-            await asyncio.sleep(TIME_STEP * 100.)
+            await asyncio.sleep(TIME_STEP * 60.)
         else:
             print('Franka: Gripper not free')
 
     async def release_gripper(self, obj):
         if self.constraint is not None:
             placed = get_pose(obj)
-            await asyncio.sleep(TIME_STEP * 100.)
+            await asyncio.sleep(TIME_STEP * 60.)
             remove_constraint(self.constraint)
             set_pose(obj, placed)
             self.constraint = None
-            await asyncio.sleep(TIME_STEP * 100.)
+            await asyncio.sleep(TIME_STEP * 60.)
             set_pose(obj, placed)
             await self.open_gripper()
             set_pose(obj, placed)
@@ -133,7 +133,7 @@ class Franka:
         franka_pick_pose = self.get_grasp_pose(obj)
         franka_lift_pose = self.get_lift_pose(franka_pick_pose)
         await self.move_to_pose(franka_lift_pose)
-        await asyncio.sleep(TIME_STEP * 100.)
+        await asyncio.sleep(TIME_STEP * 60.)
         await self.move_to_pose(franka_pick_pose)
         await self.grasp_gripper(obj)
         await self.move_to_pose(franka_lift_pose)
@@ -147,9 +147,9 @@ class Franka:
 
     async def pick_and_place(self, obj, place_loc, place_surf):
         await self.pick_up(obj)
-        await asyncio.sleep(TIME_STEP * 100.)
+        await asyncio.sleep(TIME_STEP * 60.)
         await self.reset_arm(close_grip=False)
-        await asyncio.sleep(TIME_STEP * 100.)
+        await asyncio.sleep(TIME_STEP * 60.)
         await self.place(obj, place_loc, place_surf)
         await self.reset_arm()
         
@@ -215,24 +215,24 @@ class PR2:
     async def grasp_gripper(self, obj):
         if self.constraint is None:
             close_until_collision(self.robot, self.gripper_joints, bodies=[obj])
-            await asyncio.sleep(TIME_STEP * 100.)
+            await asyncio.sleep(TIME_STEP * 60.)
             self.constraint = add_fixed_constraint(obj, self.robot, get_gripper_link(self.robot, self.arm))
-            await asyncio.sleep(TIME_STEP * 100.)
+            await asyncio.sleep(TIME_STEP * 60.)
         else:
             print("PR2: Gripper not free")
 
     async def release_gripper(self, obj):
         if self.constraint is not None:
-            await asyncio.sleep(TIME_STEP * 100.)
+            await asyncio.sleep(TIME_STEP * 60.)
             placed = get_pose(obj)
             remove_constraint(self.constraint)
             set_pose(obj, placed)
             self.constraint = None
-            await asyncio.sleep(TIME_STEP * 100.)
+            await asyncio.sleep(TIME_STEP * 60.)
             set_pose(obj, placed)
             await self.open_gripper()
             set_pose(obj, placed)
-            await asyncio.sleep(TIME_STEP * 100.)
+            await asyncio.sleep(TIME_STEP * 60.)
             
         else:
             print("PR2: Gripper is empty")
@@ -290,7 +290,7 @@ class PR2:
         lift_pose = self.get_lift_pose(grasp_pose)
         await self.open_gripper()
         await self.arm_motion(lift_pose)
-        await asyncio.sleep(TIME_STEP * 100.)
+        await asyncio.sleep(TIME_STEP * 60.)
         await self.arm_motion(grasp_pose)
         await self.grasp_gripper(obj)
         await self.arm_motion(lift_pose)
@@ -399,9 +399,12 @@ async def main():
     env = Env(use_gui=True)
     
     wait_if_gui('Start?')
+    start_time =  timer()
     
     await asyncio.gather(env.run_simulation(),env.execute_task())
 
+    end_time = timer()
+    print(f"Execution time: {end_time - start_time :.4f} seconds")
     wait_if_gui('Finish?')
     disconnect()
 
