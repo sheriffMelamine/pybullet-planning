@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 from __future__ import print_function
-import pybullet as p
+import pybullet as p # type: ignore
 
 from pybullet_tools.pr2_utils import (
     DRAKE_PR2_URDF, PR2_GROUPS, open_arm, close_until_collision,
@@ -9,10 +9,10 @@ from pybullet_tools.pr2_utils import (
 )
 from pybullet_tools.utils import (
     connect, disconnect, add_data_path, load_model, load_pybullet, set_pose, assign_link_colors,
-    plan_joint_motion, set_joint_positions, get_pose, get_link_pose, multiply, Pose, stable_z, enable_gravity,
+    plan_joint_motion, set_joint_positions, get_pose, get_link_pose, multiply, Pose, stable_z,
     get_joint_positions, quat_from_euler, Euler, PI, HideOutput, LockRenderer,joints_from_names,
     wait_if_gui, add_fixed_constraint, remove_constraint, joint_from_name, RGBA, interpolate, set_color,
-    link_from_name, approximate_as_prism, interpolate_poses, create_box, get_max_limit, get_min_limit
+    link_from_name, approximate_as_prism, interpolate_poses, pairwise_collision, get_max_limit, get_min_limit
 )
 from pybullet_tools.ikfast.franka_panda.ik import PANDA_INFO, FRANKA_URDF
 from pybullet_tools.ikfast.ikfast import get_ik_joints, either_inverse_kinematics
@@ -103,9 +103,24 @@ class Franka:
         return (grasp_pose[0][0], grasp_pose[0][1], self.stable_pose[0][2]),grasp_pose[1]
     
     def get_place_pose(self, obj, place_mark, place_surface):
-        place_mark = tuple(place_mark[:2]) + (stable_z(obj, place_surface),)
-        body_pose = get_pose(obj)
-        center, (w, length, height) = approximate_as_prism(obj, body_pose= (place_mark,body_pose[1]))
+        temp_z = stable_z(obj, place_surface)
+        place_mark = tuple(place_mark[:2]) + (temp_z,)
+        body_point , body_quat = get_pose(obj)
+        body_pose = (place_mark, body_quat)
+        with LockRenderer():
+            while True:
+                set_pose(obj, body_pose)
+                if pairwise_collision(obj, place_surface):
+                    temp_z += 0.006
+                    place_mark = tuple(place_mark[:2]) + (temp_z,)
+                    body_pose = (place_mark, body_quat)
+                    set_pose(obj, (body_point, body_quat))
+                    break
+                else:
+                    temp_z -= 0.001
+                    place_mark = tuple(place_mark[:2]) + (temp_z,)
+                    body_pose = (place_mark, body_quat)
+        center, (w, length, height) = approximate_as_prism(obj, body_pose= body_pose)
         pick_pose = multiply((center,body_pose[1]), Pose(point=[0, 0, 0.5 * height - 0.02]), Pose(euler=[0., PI, 0.]),Pose(euler=[0., 0., PI/2]))
         return pick_pose
     
@@ -239,9 +254,24 @@ class PR2:
         return multiply(grasp_pose, Pose(point=[-0.02, 0.0, 0.14]))
     
     def get_place_pose(self, obj, place_mark, place_surface):
-        place_mark = tuple(place_mark[:2]) + (stable_z(obj, place_surface),)
-        body_pose = get_pose(obj)
-        center, (w, length, height) = approximate_as_prism(obj, body_pose= (place_mark,body_pose[1]))
+        temp_z = stable_z(obj, place_surface)
+        place_mark = tuple(place_mark[:2]) + (temp_z,)
+        body_point , body_quat = get_pose(obj)
+        body_pose = (place_mark, body_quat)
+        with LockRenderer():
+            while True:
+                set_pose(obj, body_pose)
+                if pairwise_collision(obj, place_surface):
+                    temp_z += 0.003
+                    place_mark = tuple(place_mark[:2]) + (temp_z,)
+                    body_pose = (place_mark, body_quat)
+                    set_pose(obj, (body_point, body_quat))
+                    break
+                else:
+                    temp_z -= 0.001
+                    place_mark = tuple(place_mark[:2]) + (temp_z,)
+                    body_pose = (place_mark, body_quat)
+        center, (w, length, height) = approximate_as_prism(obj, body_pose= body_pose)
         pick_pose = multiply((center,body_pose[1]), Pose(point=[0.045 - 0.5 * length, 0., 0.5 * height - 0.02]))
         return pick_pose
     
@@ -328,11 +358,11 @@ class Env:
 
     def execute_task(self):
         pr2, franka, table1, table2, plane = self.pr2, self.franka, self.table1, self.table2, self.plane
-        block1, block2, block3, cup = self.block1, self.block2, self.block3, self.cup
+        block1, block2, block3, cup, plate = self.block1, self.block2, self.block3, self.cup, self.plate
 
         pr2.pick_and_place(block1, self.common_place_location, table2, obstacles=[table1, table2, franka.robot, plane, block2, block3, cup])
 
-        franka.pick_and_place(block1, self.franka_place_location, table2)
+        franka.pick_and_place(block1, self.franka_place_location, plate)
 
         pr2.pick_and_place(block2, self.common_place_location, table2, obstacles=[table1, table2, franka.robot, plane, block3, cup])
 
