@@ -12,7 +12,7 @@ from pybullet_tools.pr2_utils import (
 )
 from pybullet_tools.utils import (
     connect, disconnect, add_data_path, load_model, load_pybullet, set_pose, assign_link_colors, plan_joint_motion, get_bodies_in_region,
-    set_joint_positions, get_pose, get_link_pose, multiply, Pose, stable_z, get_joint_positions, quat_from_euler, Euler, PI, 
+    set_joint_positions, get_pose, get_link_pose, multiply, Pose, stable_z, get_joint_positions, quat_from_euler, Euler, PI, invert,
     HideOutput, LockRenderer,joints_from_names, wait_if_gui, add_fixed_constraint, remove_constraint, joint_from_name, RGBA, 
     interpolate, set_color, link_from_name, approximate_as_prism, interpolate_poses, get_max_limit, get_min_limit, pairwise_collision
 )
@@ -22,9 +22,9 @@ from pybullet_tools.ikfast.pr2.ik import get_if_info
 
 TIME_STEP = 1/240.
 STEP_SCALING = 0.
-WAIT_SCALING = 4.
+WAIT_SCALING = 2.
 SIM_SCALING = 0.
-NUM_SIM = 40
+NUM_SIM = 50
 
 class Franka:
     def __init__(self, pose):
@@ -44,7 +44,7 @@ class Franka:
 
     async def move_to_pose(self, target_pose):
         tool_pose = get_link_pose(self.robot, self.tool_link)
-        pose_path = interpolate_poses(tool_pose, target_pose, pos_step_size=0.012)
+        pose_path = interpolate_poses(tool_pose, target_pose, pos_step_size=0.012, spacing= 'cubic')
         for pose in pose_path:
             conf = next(either_inverse_kinematics(
                 self.robot, self.info, self.tool_link, pose,
@@ -94,7 +94,7 @@ class Franka:
 
     async def reset_arm(self, num_steps=50, close_grip=True):
         current_conf = get_joint_positions(self.robot, self.ik_joints)
-        joint_path =  interpolate(current_conf, self.stable_config, num_steps=num_steps)
+        joint_path =  interpolate(current_conf, self.stable_config, num_steps=num_steps, spacing='cubic')
         for conf in joint_path:
             set_joint_positions(self.robot, self.ik_joints, conf)
             await asyncio.sleep(TIME_STEP * STEP_SCALING)
@@ -112,26 +112,29 @@ class Franka:
 
     def get_place_pose(self, obj, place_mark, place_surface):
         temp_z = stable_z(obj, place_surface)
+        tool_pose = get_link_pose(self.robot, self.tool_link)
         place_mark = tuple(place_mark[:2]) + (temp_z,)
-        body_point , body_quat = get_pose(obj)
-        body_pose = (place_mark, body_quat)
-        with LockRenderer():
+        body_pose = get_pose(obj)
+        grasp = multiply(invert(body_pose), tool_pose)
+        body_quat = [0,0,0,1]
+        body_pose2 = (place_mark, body_quat) 
+        with LockRenderer(False):
             print('[Franka] Paused Simulation for Planning Place Pose')
             while True:
-                set_pose(obj, body_pose)
+                set_pose(obj, body_pose2)
                 if pairwise_collision(obj, place_surface):
-                    temp_z += 0.006
+                    temp_z += 0.004
                     place_mark = tuple(place_mark[:2]) + (temp_z,)
-                    body_pose = (place_mark, body_quat)
-                    set_pose(obj, (body_point, body_quat))
+                    body_pose2 = (place_mark, body_quat)
+                    set_pose(obj, body_pose)
                     break
                 else:
                     temp_z -= 0.001
                     place_mark = tuple(place_mark[:2]) + (temp_z,)
-                    body_pose = (place_mark, body_quat)
+                    body_pose2 = (place_mark, body_quat)
             print('[Franka] Resumed')
-        center, (w, length, height) = approximate_as_prism(obj, body_pose= body_pose)
-        pick_pose = multiply((center,body_pose[1]), Pose(point=[0, 0, 0.5 * height - 0.02]), Pose(euler=[0., PI, 0.]),Pose(euler=[0., 0., PI/2]))
+        center, (w, length, height) = approximate_as_prism(obj, body_pose= body_pose2)
+        pick_pose = multiply((center,body_pose2[1]), Pose(euler=[0., 0., PI/2]), grasp)
         return pick_pose
     
     async def pick_up(self, obj):
@@ -150,14 +153,6 @@ class Franka:
         await self.move_to_pose(franka_place_pose)
         await self.release_gripper(obj)
         await self.move_to_pose(franka_lift_pose)
-
-    async def pick_and_place(self, obj, place_loc, place_surf):
-        await self.pick_up(obj)
-        await asyncio.sleep(TIME_STEP * WAIT_SCALING)
-        await self.reset_arm(close_grip=False)
-        await asyncio.sleep(TIME_STEP * WAIT_SCALING)
-        await self.place(obj, place_loc, place_surf)
-        await self.reset_arm()
         
 
 class PR2:
@@ -199,7 +194,7 @@ class PR2:
 
     async def arm_motion(self, target_pose):
         tool_pose = get_link_pose(self.robot, self.tool_link)
-        pose_path = interpolate_poses(tool_pose, target_pose, pos_step_size=0.015)
+        pose_path = interpolate_poses(tool_pose, target_pose, pos_step_size=0.015, spacing='cubic')
         for pose in pose_path:
             conf = next(either_inverse_kinematics(
                 self.robot, self.arm_info, self.tool_link, pose, fixed_joints=[self.ik_joints[0]],
@@ -231,8 +226,8 @@ class PR2:
 
     async def release_gripper(self, obj):
         if self.constraint is not None:
-            await asyncio.sleep(TIME_STEP * WAIT_SCALING)
             placed = get_pose(obj)
+            await asyncio.sleep(TIME_STEP * WAIT_SCALING)
             remove_constraint(self.constraint)
             set_pose(obj, placed)
             self.constraint = None
@@ -250,7 +245,7 @@ class PR2:
     async def reset_arm(self, num_steps=25):
         goal_conf = COMPACT_LEFT_ARM if self.arm == 'left' else rightarm_from_leftarm(COMPACT_LEFT_ARM)
         current_conf = get_joint_positions(self.robot, self.ik_joints[1:])
-        joint_path =  interpolate(current_conf, goal_conf, num_steps=num_steps)
+        joint_path =  interpolate(current_conf, goal_conf, num_steps=num_steps, spacing='cubic')
         for conf in joint_path:
             set_joint_positions(self.robot, self.ik_joints[1:], conf)
             await asyncio.sleep(TIME_STEP * STEP_SCALING)
@@ -274,26 +269,29 @@ class PR2:
     
     def get_place_pose(self, obj, place_mark, place_surface):
         temp_z = stable_z(obj, place_surface)
+        tool_pose = get_link_pose(self.robot, self.tool_link)
         place_mark = tuple(place_mark[:2]) + (temp_z,)
-        body_point , body_quat = get_pose(obj)
-        body_pose = (place_mark, body_quat)
-        with LockRenderer():
+        body_pose = get_pose(obj)
+        grasp = multiply(invert(body_pose), tool_pose)
+        body_quat = [0,0,0,1]
+        body_pose2 = (place_mark, body_quat) 
+        with LockRenderer(False):
             print('[PR2] Paused Simulation for Planning Place Pose')
             while True:
-                set_pose(obj, body_pose)
+                set_pose(obj, body_pose2)
                 if pairwise_collision(obj, place_surface):
-                    temp_z += 0.003
+                    temp_z += 0.004
                     place_mark = tuple(place_mark[:2]) + (temp_z,)
-                    body_pose = (place_mark, body_quat)
-                    set_pose(obj, (body_point, body_quat))
+                    body_pose2 = (place_mark, body_quat)
+                    set_pose(obj, body_pose)
                     break
                 else:
                     temp_z -= 0.001
                     place_mark = tuple(place_mark[:2]) + (temp_z,)
-                    body_pose = (place_mark, body_quat)
+                    body_pose2 = (place_mark, body_quat)
             print('[PR2] Resumed')
-        center, (w, length, height) = approximate_as_prism(obj, body_pose= body_pose)
-        pick_pose = multiply((center,body_pose[1]), Pose(point=[0.045 - 0.5 * length, 0., 0.5 * height - 0.02]))
+        center, (w, length, height) = approximate_as_prism(obj, body_pose= body_pose2)
+        pick_pose = multiply((center,body_pose2[1]), grasp)
         return pick_pose
     
     async def pick_up(self, obj):
@@ -316,14 +314,6 @@ class PR2:
     async def move_base_to_location(self, location, obstacles=[]):
         goal = self.grasp_approach_base(location)
         await self.plan_base_motion(goal, obstacles=obstacles)
-
-    async def pick_and_place(self, obj, place_loc, place_surf, obstacles=[]):
-        obj_pose = get_pose(obj)
-        await self.move_base_to_location(obj_pose[0], obstacles=obstacles)
-        await self.pick_up(obj)
-        await self.move_base_to_location(place_loc, obstacles=obstacles)
-        await self.place(obj, place_loc, place_surf)
-        await self.reset_arm()
 
 
 class ConditionBehavior(pt.behaviour.Behaviour):
@@ -596,14 +586,19 @@ class Env:
                 self.franka_status_dict[key] = 2
             await asyncio.sleep(TIME_STEP * WAIT_SCALING)
     
+    async def execute_task(self):
+        await asyncio.gather(self.execute_franka(),self.execute_pr2())
     
 async def main():
     env = Env(use_gui=True)
     bt_thread = threading.Thread(target=env.bt_loop, daemon=True)
+
     wait_if_gui('Start?')
-    start_time =  time.perf_counter()
+    print('The Behavior Trees for Individual Robots:')
     print(pt.display.ascii_tree(env.pr2_tree.root))
     print(pt.display.ascii_tree(env.franka_tree.root))
+    start_time =  time.perf_counter()
+    
     bt_thread.start()
     
     await asyncio.gather(env.run_simulation(),env.execute_franka(),env.execute_pr2())

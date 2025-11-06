@@ -4972,6 +4972,12 @@ def get_pose_distance(pose1, pose2):
     ori_distance = quat_angle_between(quat1, quat2)
     return pos_distance, ori_distance
 
+def cubicspace(start, stop, num, **kwargs):
+    t = np.linspace(-1, 1, num, **kwargs)
+    x = np.sin(np.pi*t/2) 
+    x = (x - x.min()) / (x.max() - x.min())
+    return start + x * (stop - start)
+
 def interpolate_points(point1, point2, step_size=1e-2):
     # TODO: get_position_waypoints
     # TODO: refactor interpolate_poses to take num steps that's the larger of the two
@@ -4981,23 +4987,33 @@ def interpolate_points(point1, point2, step_size=1e-2):
         yield convex_combination(point1, point2, w=w)
     yield point2
 
-def interpolate_poses(pose1, pose2, pos_step_size=0.01, ori_step_size=np.pi/16):
+def interpolate_poses(pose1, pose2, pos_step_size=0.01, ori_step_size=np.pi/16, spacing = 'linear'):
     pos1, quat1 = pose1
     pos2, quat2 = pose2
     num_steps = max(2, int(math.ceil(max(
         np.divide(get_pose_distance(pose1, pose2), [pos_step_size, ori_step_size])))))
     yield pose1
-    for w in np.linspace(0, 1, num=num_steps, endpoint=True)[1:-1]:
-        pos = convex_combination(pos1, pos2, w=w)
-        quat = quat_combination(quat1, quat2, fraction=w)
-        yield (pos, quat)
+    if spacing == 'linear':
+        for w in np.linspace(0, 1, num=num_steps, endpoint=True)[1:-1]:
+            pos = convex_combination(pos1, pos2, w=w)
+            quat = quat_combination(quat1, quat2, fraction=w)
+            yield (pos, quat)
+    if spacing == 'cubic':
+        for w in cubicspace(0, 1, num=num_steps, endpoint=True)[1:-1]:
+            pos = convex_combination(pos1, pos2, w=w)
+            quat = quat_combination(quat1, quat2, fraction=w)
+            yield (pos, quat)
     yield pose2
 
-def interpolate(value1, value2, num_steps=2):
+def interpolate(value1, value2, num_steps=2, spacing = 'linear'):
     num_steps = max(num_steps, 2)
     yield value1
-    for w in np.linspace(0, 1, num=num_steps, endpoint=True)[1:-1]:
-        yield convex_combination(value1, value2, w=w)
+    if spacing == 'linear':
+        for w in np.linspace(0, 1, num=num_steps, endpoint=True)[1:-1]:
+            yield convex_combination(value1, value2, w=w)
+    if spacing == 'cubic':
+        for w in np.linspace(0, 1, num=num_steps, endpoint=True)[1:-1]:
+            yield convex_combination(value1, value2, w=w)
     yield value2
 
 def interpolate_waypoints(interpolate_fn, waypoints, returns_first=True):
