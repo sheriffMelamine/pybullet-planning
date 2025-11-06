@@ -9,7 +9,7 @@ from pybullet_tools.pr2_utils import (
 )
 from pybullet_tools.utils import (
     connect, disconnect, add_data_path, load_model, load_pybullet, set_pose, assign_link_colors, plan_joint_motion,
-    set_joint_positions, get_pose, get_link_pose, multiply, Pose, stable_z, get_joint_positions, quat_from_euler, Euler, PI, 
+    set_joint_positions, get_pose, get_link_pose, multiply, Pose, stable_z, get_joint_positions, quat_from_euler, Euler, PI, invert,
     HideOutput, LockRenderer,joints_from_names, wait_if_gui, add_fixed_constraint, remove_constraint, joint_from_name, RGBA, 
     interpolate, set_color, link_from_name, approximate_as_prism, interpolate_poses, get_max_limit, get_min_limit, pairwise_collision
 )
@@ -107,24 +107,27 @@ class Franka:
     
     def get_place_pose(self, obj, place_mark, place_surface):
         temp_z = stable_z(obj, place_surface)
+        tool_pose = get_link_pose(self.robot, self.tool_link)
         place_mark = tuple(place_mark[:2]) + (temp_z,)
-        body_point , body_quat = get_pose(obj)
-        body_pose = (place_mark, body_quat)
+        body_pose = get_pose(obj)
+        grasp = multiply(invert(body_pose), tool_pose)
+        body_quat = [0,0,0,1]
+        body_pose2 = (place_mark, body_quat) 
         with LockRenderer():
             while True:
-                set_pose(obj, body_pose)
+                set_pose(obj, body_pose2)
                 if pairwise_collision(obj, place_surface):
-                    temp_z += 0.006
+                    temp_z += 0.004
                     place_mark = tuple(place_mark[:2]) + (temp_z,)
-                    body_pose = (place_mark, body_quat)
-                    set_pose(obj, (body_point, body_quat))
+                    body_pose2 = (place_mark, body_quat)
+                    set_pose(obj, body_pose)
                     break
                 else:
                     temp_z -= 0.001
                     place_mark = tuple(place_mark[:2]) + (temp_z,)
-                    body_pose = (place_mark, body_quat)
-        center, (w, length, height) = approximate_as_prism(obj, body_pose= body_pose)
-        pick_pose = multiply((center,body_pose[1]), Pose(point=[0, 0, 0.5 * height - 0.02]), Pose(euler=[0., PI, 0.]),Pose(euler=[0., 0., PI/2]))
+                    body_pose2 = (place_mark, body_quat)
+        center, (w, length, height) = approximate_as_prism(obj, body_pose= body_pose2)
+        pick_pose = multiply((center,body_pose2[1]), Pose(euler=[0., 0., PI/2]), grasp)
         return pick_pose
     
     def pick_up(self, obj):
@@ -265,24 +268,27 @@ class PR2:
     
     def get_place_pose(self, obj, place_mark, place_surface):
         temp_z = stable_z(obj, place_surface)
+        tool_pose = get_link_pose(self.robot, self.tool_link)
         place_mark = tuple(place_mark[:2]) + (temp_z,)
-        body_point , body_quat = get_pose(obj)
-        body_pose = (place_mark, body_quat)
+        body_pose = get_pose(obj)
+        grasp = multiply(invert(body_pose), tool_pose)
+        body_quat = [0,0,0,1]
+        body_pose2 = (place_mark, body_quat) 
         with LockRenderer():
             while True:
-                set_pose(obj, body_pose)
+                set_pose(obj, body_pose2)
                 if pairwise_collision(obj, place_surface):
-                    temp_z += 0.003
+                    temp_z += 0.004
                     place_mark = tuple(place_mark[:2]) + (temp_z,)
-                    body_pose = (place_mark, body_quat)
-                    set_pose(obj, (body_point, body_quat))
+                    body_pose2 = (place_mark, body_quat)
+                    set_pose(obj, body_pose)
                     break
                 else:
                     temp_z -= 0.001
                     place_mark = tuple(place_mark[:2]) + (temp_z,)
-                    body_pose = (place_mark, body_quat)
-        center, (w, length, height) = approximate_as_prism(obj, body_pose= body_pose)
-        pick_pose = multiply((center,body_pose[1]), Pose(point=[0.045 - 0.5 * length, 0., 0.5 * height - 0.02]))
+                    body_pose2 = (place_mark, body_quat)
+        center, (w, length, height) = approximate_as_prism(obj, body_pose= body_pose2)
+        pick_pose = multiply((center,body_pose2[1]), grasp)
         return pick_pose
     
     def pick_up(self, obj):

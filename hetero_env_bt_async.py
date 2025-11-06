@@ -24,7 +24,7 @@ TIME_STEP = 1/240.
 STEP_SCALING = 0.
 WAIT_SCALING = 2.
 SIM_SCALING = 0.
-NUM_SIM = 50
+NUM_SIM = 40
 
 class Franka:
     def __init__(self, pose):
@@ -118,7 +118,7 @@ class Franka:
         grasp = multiply(invert(body_pose), tool_pose)
         body_quat = [0,0,0,1]
         body_pose2 = (place_mark, body_quat) 
-        with LockRenderer(False):
+        with LockRenderer():
             print('[Franka] Paused Simulation for Planning Place Pose')
             while True:
                 set_pose(obj, body_pose2)
@@ -275,7 +275,7 @@ class PR2:
         grasp = multiply(invert(body_pose), tool_pose)
         body_quat = [0,0,0,1]
         body_pose2 = (place_mark, body_quat) 
-        with LockRenderer(False):
+        with LockRenderer():
             print('[PR2] Paused Simulation for Planning Place Pose')
             while True:
                 set_pose(obj, body_pose2)
