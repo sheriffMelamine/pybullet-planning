@@ -65,6 +65,19 @@ python3 -m hetero_env_asyncio
 
 ---
 
+### ✅ Test Environment: Implementing Behavior Tree with `asyncio`
+
+Utilizing the `asyncio` based concurrent simulation, the implementaion of **behavior trees** for high level planning is added. For that, `py_trees` module is used for creating behavior trees for individual robots and defining their plans. In this code, behavior tree is run in a separate thread in background, while the simulation and the robot motion and calculations are coordinated in `asyncio` based concurrent simulation. 
+
+In other words, the **low-level motion** and the **high-level planning** are kept *independent*, where they can communicate using **shared environment variables**.
+
+To run:
+
+```bash
+python3 -m hetero_env_bt_async
+```
+
+---
 *More modules & demos will be added soon…*
 
 

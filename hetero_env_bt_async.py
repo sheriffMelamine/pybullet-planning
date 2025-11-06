@@ -1,6 +1,7 @@
 #!/usr/bin/env python
-from time import perf_counter as timer
-
+import time
+import py_trees as pt  # type: ignore
+import threading
 import asyncio
 import pybullet as p # type: ignore
 
@@ -21,11 +22,9 @@ from pybullet_tools.ikfast.pr2.ik import get_if_info
 
 TIME_STEP = 1/240.
 STEP_SCALING = 0.
-WAIT_SCALING = 2.
+WAIT_SCALING = 4.
 SIM_SCALING = 0.
 NUM_SIM = 40
-DEBUG = False
-
 
 class Franka:
     def __init__(self, pose):
@@ -56,8 +55,6 @@ class Franka:
                 print('Unable to find IK solution for Franka.')
                 return
             set_joint_positions(self.robot, self.ik_joints, conf)
-            if DEBUG:
-                print('FRANKA: IK Motion Arm')
             await asyncio.sleep(TIME_STEP * STEP_SCALING)
     
     async def open_gripper(self):
@@ -90,9 +87,8 @@ class Franka:
             set_pose(obj, placed)
             await self.open_gripper()
             set_pose(obj, placed)
-            p.stepSimulation()
+            await asyncio.sleep(TIME_STEP * WAIT_SCALING)
             set_pose(obj, placed)
-            p.stepSimulation()
         else:
             print('Franka: Gripper is empty')
 
@@ -120,6 +116,7 @@ class Franka:
         body_point , body_quat = get_pose(obj)
         body_pose = (place_mark, body_quat)
         with LockRenderer():
+            print('[Franka] Paused Simulation for Planning Place Pose')
             while True:
                 set_pose(obj, body_pose)
                 if pairwise_collision(obj, place_surface):
@@ -132,6 +129,7 @@ class Franka:
                     temp_z -= 0.001
                     place_mark = tuple(place_mark[:2]) + (temp_z,)
                     body_pose = (place_mark, body_quat)
+            print('[Franka] Resumed')
         center, (w, length, height) = approximate_as_prism(obj, body_pose= body_pose)
         pick_pose = multiply((center,body_pose[1]), Pose(point=[0, 0, 0.5 * height - 0.02]), Pose(euler=[0., PI, 0.]),Pose(euler=[0., 0., PI/2]))
         return pick_pose
@@ -186,10 +184,10 @@ class PR2:
         disabled = get_disabled_collisions(self.robot)
         base_joints = [joint_from_name(self.robot, name) for name in PR2_GROUPS['base']]
         with LockRenderer():
-            if DEBUG:
-                print('PR2: Planning Base')
+            print('[PR2] Paused Simulation for Planning Base Motion')
             base_path = plan_joint_motion(self.robot, base_joints[:2], goal_conf[:2],
                                       obstacles=obstacles, disabled_collisions=disabled)
+            print('[PR2] Resumed')
         if base_path is None:
             print("PR2: base path not found")
             return
@@ -197,8 +195,6 @@ class PR2:
             set_joint_positions(self.robot, base_joints[:2], q)
             set_joint_positions(self.robot, self.gripper_joints, grip_conf)
             set_joint_positions(self.robot, self.ik_joints, arm_conf)
-            if DEBUG:
-                print('PR2: Moving Base')
             await asyncio.sleep(TIME_STEP * STEP_SCALING)
 
     async def arm_motion(self, target_pose):
@@ -245,6 +241,7 @@ class PR2:
             await self.open_gripper()
             set_pose(obj, placed)
             await asyncio.sleep(TIME_STEP * WAIT_SCALING)
+            set_pose(obj, placed)
             
         else:
             print("PR2: Gripper is empty")
@@ -281,6 +278,7 @@ class PR2:
         body_point , body_quat = get_pose(obj)
         body_pose = (place_mark, body_quat)
         with LockRenderer():
+            print('[PR2] Paused Simulation for Planning Place Pose')
             while True:
                 set_pose(obj, body_pose)
                 if pairwise_collision(obj, place_surface):
@@ -293,6 +291,7 @@ class PR2:
                     temp_z -= 0.001
                     place_mark = tuple(place_mark[:2]) + (temp_z,)
                     body_pose = (place_mark, body_quat)
+            print('[PR2] Resumed')
         center, (w, length, height) = approximate_as_prism(obj, body_pose= body_pose)
         pick_pose = multiply((center,body_pose[1]), Pose(point=[0.045 - 0.5 * length, 0., 0.5 * height - 0.02]))
         return pick_pose
@@ -327,12 +326,59 @@ class PR2:
         await self.reset_arm()
 
 
+class ConditionBehavior(pt.behaviour.Behaviour):
+    def __init__(self, name, condition_fn, *args, **kwargs):
+        super().__init__(name)
+        self.fn = condition_fn
+        self.args = args
+        self.kwargs = kwargs
+
+    def update(self):
+        if self.fn(*self.args, **self.kwargs):
+            print(f"[BT] Condition OK -> SUCCESS ({self.name}).")
+            return pt.common.Status.SUCCESS
+        else:
+            return pt.common.Status.RUNNING
+
+
+class CommandBehavior(pt.behaviour.Behaviour):
+    def __init__(self, name, command_queue, status_dict, command, *args, **kwargs):
+        
+        super().__init__(name)
+        self.command_queue = command_queue
+        self.status_dict = status_dict # 0 - Inactive, 1 - Running, 2 - Success
+        self.command = command
+        self.args = args
+        self.kwargs = kwargs
+
+    def initialise(self):
+        self.status_dict[self.name] = 0  
+
+    def update(self):
+        if self.status_dict[self.name] == 0:
+            self.command_queue.put_nowait((self.name, self.command, self.args, self.kwargs))
+            self.status_dict[self.name] = 1 
+            print(f"[BT] Command sent -> {self.name}, args={self.args}, kwargs={self.kwargs}")
+            return pt.common.Status.RUNNING
+        elif self.status_dict[self.name] == 2:
+            print(f"[BT] Command complete -> SUCCESS ({self.name})")
+            return pt.common.Status.SUCCESS
+        else:
+            return pt.common.Status.RUNNING
+
+
 class Env:
     def __init__(self, use_gui=True):
         connect(use_gui=use_gui)
         add_data_path()
         self._setup_scene()
-        self.all_done = False
+        self.pr2_done = False
+        self.franka_done = False
+        self.pr2_command_queue = asyncio.Queue()
+        self.franka_command_queue = asyncio.Queue()
+        self.pr2_status_dict = dict()
+        self.franka_status_dict = dict()
+        self.create_trees()
 
     def _setup_scene(self):
         self.plane = p.loadURDF("plane.urdf")
@@ -382,54 +428,187 @@ class Env:
 
         self.cup, self.table1, self.table2, self.plate = cup, table1, table2, plate
 
+    def is_common_place_empty(self):
+        x, y, z = self.common_place_location
+        lower = [x-0.05, y-0.05, z-0.01]
+        upper = [x+0.05, y+0.05, z+0.03]
+        return len(get_bodies_in_region((lower, upper))) <= 1
+
+    def create_trees(self):
+
+        pr2_root = pt.composites.Sequence("PR2TaskPlan", True)
+
+        pr2_task1 = pt.composites.Sequence("PR2PickPlaceTask1", True)
+        pr2_task2 = pt.composites.Sequence("PR2PickPlaceTask2", True)
+        pr2_task3 = pt.composites.Sequence("PR2PickPlaceTask3", True)
+
+        p11 = CommandBehavior("PR2: MoveToObject1", self.pr2_command_queue, self.pr2_status_dict, self.pr2.move_base_to_location, 
+                              get_pose(self.block1)[0], obstacles=self.obstacles)
+        
+        p12 = CommandBehavior("PR2: PickUpObject1", self.pr2_command_queue, self.pr2_status_dict, self.pr2.pick_up, self.block1)
+
+        p13 = CommandBehavior("PR2: MoveToPlacement", self.pr2_command_queue, self.pr2_status_dict, self.pr2.move_base_to_location,
+                               self.common_place_location, obstacles=self.obstacles)
+
+        p14 = ConditionBehavior("PR2: CheckPlaceEmpty", self.is_common_place_empty)
+
+        p15 = CommandBehavior("PR2: PlaceObject1", self.pr2_command_queue, self.pr2_status_dict, self.pr2.place,
+                               self.block1, self.common_place_location, self.table2)
+
+        p16 = CommandBehavior("PR2: ResetArm", self.pr2_command_queue, self.pr2_status_dict, self.pr2.reset_arm)
+
+
+
+        p21 = CommandBehavior("PR2: MoveToObject2", self.pr2_command_queue, self.pr2_status_dict, self.pr2.move_base_to_location, 
+                              get_pose(self.block2)[0], obstacles=self.obstacles)
+
+        p22 = CommandBehavior("PR2: PickUpObject2", self.pr2_command_queue, self.pr2_status_dict, self.pr2.pick_up, self.block2)
+
+        p23 = CommandBehavior("PR2: MoveToPlacement", self.pr2_command_queue, self.pr2_status_dict, self.pr2.move_base_to_location,
+                            self.common_place_location, obstacles=self.obstacles)
+
+        p24 = ConditionBehavior("PR2: CheckPlaceEmpty", self.is_common_place_empty)
+
+        p25 = CommandBehavior("PR2: PlaceObject2", self.pr2_command_queue, self.pr2_status_dict,self.pr2.place, 
+                            self.block2, self.common_place_location, self.table2)
+
+        p26 = CommandBehavior("PR2: ResetArm", self.pr2_command_queue, self.pr2_status_dict, self.pr2.reset_arm)
+                            
+
+
+        p31 = CommandBehavior("PR2: MoveToObject3", self.pr2_command_queue, self.pr2_status_dict, self.pr2.move_base_to_location,
+                             get_pose(self.block3)[0], obstacles=self.obstacles)
+                            
+
+        p32 = CommandBehavior("PR2: PickUpObject3", self.pr2_command_queue, self.pr2_status_dict, self.pr2.pick_up, self.block3)
+                            
+
+        p33 = CommandBehavior("PR2: MoveToPlacement", self.pr2_command_queue, self.pr2_status_dict, self.pr2.move_base_to_location,
+                             self.common_place_location, obstacles=self.obstacles)
+
+        p34 = ConditionBehavior("PR2: CheckPlaceEmpty", self.is_common_place_empty)
+
+        p35 = CommandBehavior("PR2: PlaceObject3", self.pr2_command_queue, self.pr2_status_dict, self.pr2.place, 
+                              self.block3, self.common_place_location, self.table2)
+
+        p36 = CommandBehavior("PR2: ResetArm", self.pr2_command_queue, self.pr2_status_dict, self.pr2.reset_arm)
+
+
+        pr2_task1.add_children([p11, p12, p13, p14, p15, p16])
+        pr2_task2.add_children([p21, p22, p23, p24, p25, p26])
+        pr2_task3.add_children([p31, p32, p33, p34, p35, p36])
+
+        pr2_root.add_children([pr2_task1, pr2_task2, pr2_task3])
+
+        self.pr2_tree = pt.trees.BehaviourTree(pr2_root)
+
+
+        franka_root = pt.composites.Sequence("FrankaTaskPlan", True)
+
+        franka_task1 = pt.composites.Sequence("FrankaPickPlaceTask1", True)
+        franka_task2 = pt.composites.Sequence("FrankaPickPlaceTask2", True)
+        franka_task3 = pt.composites.Sequence("FrankaPickPlaceTask3", True)
+
+        f11 = ConditionBehavior("Franka: CheckPlaceOccupied", lambda: not self.is_common_place_empty())  
+
+        f12 = CommandBehavior("Franka: PickUpObject1", self.franka_command_queue, self.franka_status_dict, self.franka.pick_up, 
+                              self.block1)
+
+        f13 = CommandBehavior("Franka: ResetArm", self.franka_command_queue, self.franka_status_dict, self.franka.reset_arm, 
+                              close_grip = False)
+
+        f14 = CommandBehavior("Franka: PlaceObject1", self.franka_command_queue, self.franka_status_dict,
+                            self.franka.place, self.block1, self.franka_place_location, self.plate)
+
+        f15 = CommandBehavior("Franka: ResetArm", self.franka_command_queue, self.franka_status_dict, self.franka.reset_arm)
+
+
+        f21 = ConditionBehavior("Franka: CheckPlaceOccupied", lambda: not self.is_common_place_empty())
+
+        f22 = CommandBehavior("Franka: PickUpObject2", self.franka_command_queue, self.franka_status_dict,
+                            self.franka.pick_up, self.block2)
+
+        f23 = CommandBehavior("Franka: ResetArm", self.franka_command_queue, self.franka_status_dict,
+                            self.franka.reset_arm, close_grip = False)
+
+        f24 = CommandBehavior("Franka: PlaceObject2", self.franka_command_queue, self.franka_status_dict,
+                            self.franka.place, self.block2, self.franka_place_location, self.block1)
+
+        f25 = CommandBehavior("Franka: ResetArm", self.franka_command_queue, self.franka_status_dict, self.franka.reset_arm)
+
+
+        f31 = ConditionBehavior("Franka: CheckPlaceOccupied", lambda: not self.is_common_place_empty())
+
+        f32 = CommandBehavior("Franka: PickUpObject3", self.franka_command_queue, self.franka_status_dict,
+                            self.franka.pick_up, self.block3)
+
+        f33 = CommandBehavior("Franka: ResetArm", self.franka_command_queue, self.franka_status_dict,
+                            self.franka.reset_arm, close_grip = False)
+
+        f34 = CommandBehavior("Franka: PlaceObject3", self.franka_command_queue, self.franka_status_dict,
+                            self.franka.place, self.block3, self.franka_place_location, self.block2)
+
+        f35 = CommandBehavior("Franka: ResetArm", self.franka_command_queue, self.franka_status_dict, self.franka.reset_arm)
+
+        franka_task1.add_children([f11, f12, f13, f14, f15])
+        franka_task2.add_children([f21, f22, f23, f24, f25])
+        franka_task3.add_children([f31, f32, f33, f34, f35])
+
+        franka_root.add_children([franka_task1, franka_task2, franka_task3])
+
+        self.franka_tree = pt.trees.BehaviourTree(franka_root)
+
+    def bt_loop(self):
+        print("Running BT in background thread...")
+        while not (self.franka_done and self.pr2_done):
+            if not self.pr2_done:
+                self.pr2_tree.tick()
+                self.pr2_done = True if self.pr2_tree.root.status == pt.common.Status.SUCCESS else False
+            if not self.franka_done:
+                self.franka_tree.tick()
+                self.franka_done = True if self.franka_tree.root.status == pt.common.Status.SUCCESS else False
+            time.sleep(0.1)
+
     async def run_simulation(self):
-        if DEBUG:
-            prev_time = timer()
-            num_steps = 0
-        while self.all_done is False:
+        while not (self.franka_done and self.pr2_done):
             for _ in range(NUM_SIM):
                 p.stepSimulation()
-                if DEBUG:
-                    num_steps += 1
-            if DEBUG:
-                current_time = timer()
-                print(f'SIM TIME: {current_time-prev_time} seconds, SIM STEP: {num_steps}')
-                prev_time = current_time
             await asyncio.sleep(TIME_STEP * SIM_SCALING)
     
-    async def execute_task(self):
-
-        pr2, franka, table2 = self.pr2, self.franka, self.table2
-        block1, block2, block3, plate = self.block1, self.block2, self.block3, self.plate
-
-
-
-        await pr2.pick_and_place(block1, self.common_place_location, table2, 
-                                obstacles=self.obstacles)
         
-        await asyncio.gather(franka.pick_and_place(block1, self.franka_place_location, plate),
-                            pr2.pick_and_place(block2, self.common_place_location, table2, 
-                                obstacles=self.obstacles))
-        
-        await asyncio.gather(franka.pick_and_place(block2, self.franka_place_location, block1),
-                            pr2.pick_and_place(block3, self.common_place_location, table2, 
-                                obstacles=self.obstacles))
-        
-        await franka.pick_and_place(block3, self.franka_place_location, block2)
-
-        print("Task execution complete.")
-        self.all_done = True
+    async def execute_pr2(self):
+        while not self.pr2_done:
+            if not self.pr2_command_queue.empty():
+                cmd = await self.pr2_command_queue.get()
+                key, action, args, kwargs = cmd
+                await action(*args, **kwargs)
+                self.pr2_status_dict[key] = 2
+            await asyncio.sleep(TIME_STEP * WAIT_SCALING)
+            
 
 
+    async def execute_franka(self):
+        while not self.franka_done:
+            if not self.franka_command_queue.empty():
+                cmd = await self.franka_command_queue.get()
+                key, action, args, kwargs = cmd
+                await action(*args, **kwargs)
+                self.franka_status_dict[key] = 2
+            await asyncio.sleep(TIME_STEP * WAIT_SCALING)
+    
+    
 async def main():
     env = Env(use_gui=True)
-    
+    bt_thread = threading.Thread(target=env.bt_loop, daemon=True)
     wait_if_gui('Start?')
-    start_time =  timer()
+    start_time =  time.perf_counter()
+    print(pt.display.ascii_tree(env.pr2_tree.root))
+    print(pt.display.ascii_tree(env.franka_tree.root))
+    bt_thread.start()
     
-    await asyncio.gather(env.run_simulation(),env.execute_task())
-
-    end_time = timer()
+    await asyncio.gather(env.run_simulation(),env.execute_franka(),env.execute_pr2())
+    
+    end_time = time.perf_counter()
     print(f"Execution time: {end_time - start_time :.4f} seconds")
     wait_if_gui('Finish?')
     disconnect()
