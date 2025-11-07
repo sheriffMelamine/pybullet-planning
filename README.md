@@ -16,6 +16,16 @@ The system enables coordinated workflows between robots with different capabilit
 
 ---
 
+### Requirements:
+
+In order to test the codes, install python modules with their appropriate versions:
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
 ### ✅ Test Environment: Single Execution
 
 In this configuration, tasks are executed **strictly one after another**, meaning only one robot is active at any given time.  

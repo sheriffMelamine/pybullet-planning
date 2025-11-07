@@ -498,13 +498,7 @@ class Env:
         connect(use_gui=use_gui)
         add_data_path()
         self._setup_scene()
-        self.pr2_done = False
-        self.franka_done = False
-        self.pr2_command_queue = asyncio.Queue()
-        self.franka_command_queue = asyncio.Queue()
-        self.pr2_status_dict = dict()
-        self.franka_status_dict = dict()
-        self.create_trees()
+        self._create_trees()
 
     def _setup_scene(self):
         self.plane = p.loadURDF("plane.urdf")
@@ -565,7 +559,14 @@ class Env:
         upper = [x + 0.05, y + 0.05, z + 0.03]
         return len(get_bodies_in_region((lower, upper))) <= 1
 
-    def create_trees(self):
+    def _create_trees(self):
+        self.pr2_done = False
+        self.franka_done = False
+        self.pr2_command_queue = asyncio.Queue()
+        self.franka_command_queue = asyncio.Queue()
+        self.pr2_status_dict = dict()
+        self.franka_status_dict = dict()
+
         pr2_root = pt.composites.Sequence("PR2TaskPlan", True)
 
         pr2_task1 = pt.composites.Sequence("PR2PickPlaceTask1", True)

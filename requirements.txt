@@ -1,3 +1,5 @@
-numpy
-pybullet
-# scipy
+matplotlib>=3.10.1
+numpy>=2.2.5
+py_trees==2.3.0
+pybullet>=3.2.7
+scipy>=1.15.2
