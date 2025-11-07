@@ -3,70 +3,148 @@ import time
 import py_trees as pt  # type: ignore
 import threading
 import asyncio
-import pybullet as p # type: ignore
+import pybullet as p  # type: ignore
 
 from pybullet_tools.pr2_utils import (
-    DRAKE_PR2_URDF, PR2_GROUPS, open_arm, close_until_collision,
-    get_gripper_link, get_gripper_joints, get_disabled_collisions,
-    COMPACT_LEFT_ARM, rightarm_from_leftarm, close_arm
+    DRAKE_PR2_URDF,
+    PR2_GROUPS,
+    open_arm,
+    close_until_collision,
+    get_gripper_link,
+    get_gripper_joints,
+    get_disabled_collisions,
+    COMPACT_LEFT_ARM,
+    rightarm_from_leftarm,
+    close_arm,
 )
 from pybullet_tools.utils import (
-    connect, disconnect, add_data_path, load_model, load_pybullet, set_pose, assign_link_colors, plan_joint_motion, get_bodies_in_region,
-    set_joint_positions, get_pose, get_link_pose, multiply, Pose, stable_z, get_joint_positions, quat_from_euler, Euler, PI, invert,
-    HideOutput, LockRenderer,joints_from_names, wait_if_gui, add_fixed_constraint, remove_constraint, joint_from_name, RGBA, 
-    interpolate, set_color, link_from_name, approximate_as_prism, interpolate_poses, get_max_limit, get_min_limit, pairwise_collision
+    connect,
+    disconnect,
+    add_data_path,
+    load_model,
+    load_pybullet,
+    set_pose,
+    assign_link_colors,
+    plan_joint_motion,
+    get_bodies_in_region,
+    set_joint_positions,
+    get_pose,
+    get_link_pose,
+    multiply,
+    Pose,
+    stable_z,
+    get_joint_positions,
+    quat_from_euler,
+    Euler,
+    PI,
+    invert,
+    HideOutput,
+    LockRenderer,
+    joints_from_names,
+    wait_if_gui,
+    add_fixed_constraint,
+    remove_constraint,
+    joint_from_name,
+    RGBA,
+    interpolate,
+    set_color,
+    link_from_name,
+    approximate_as_prism,
+    interpolate_poses,
+    get_max_limit,
+    get_min_limit,
+    pairwise_collision,
 )
 from pybullet_tools.ikfast.franka_panda.ik import PANDA_INFO, FRANKA_URDF
 from pybullet_tools.ikfast.ikfast import get_ik_joints, either_inverse_kinematics
 from pybullet_tools.ikfast.pr2.ik import get_if_info
 
-TIME_STEP = 1/240.
-STEP_SCALING = 0.
-WAIT_SCALING = 2.
-SIM_SCALING = 0.
+
+TIME_STEP = 1 / 240.0
+STEP_SCALING = 2.0
+WAIT_SCALING = 8.0
+SIM_SCALING = 2.0
 NUM_SIM = 40
+
+
+class VariableSleeper:
+    def __init__(self, interval):
+        self.interval = interval
+        self.last_time = None
+
+    async def __call__(self):
+        current_time = time.perf_counter()
+        if self.last_time is None:
+            elapsed = 0
+        else:
+            elapsed = current_time - self.last_time
+
+        sleep_time = max(0.0001, self.interval - elapsed)
+
+        await asyncio.sleep(sleep_time)
+
+        self.last_time = time.perf_counter()
+
+    def reset(self):
+        self.last_time = None
+
 
 class Franka:
     def __init__(self, pose):
-        self.stable_config = [0, -PI/4, 0, -3*PI/4, 0, PI/2, PI/4]
+        self.stable_config = [0, -PI / 4, 0, -3 * PI / 4, 0, PI / 2, PI / 4]
         with LockRenderer(), HideOutput(True):
             self.robot = load_pybullet(FRANKA_URDF, fixed_base=True)
             set_pose(self.robot, pose)
             assign_link_colors(self.robot, max_colors=2, s=0.7, v=1.0)
-            self.tool_link = link_from_name(self.robot, 'tool_link')
-            self.gripper_joints = [joint_from_name(self.robot, 'panda_finger_joint1'), joint_from_name(self.robot, 'panda_finger_joint2')]
+            self.tool_link = link_from_name(self.robot, "tool_link")
+            self.gripper_joints = [
+                joint_from_name(self.robot, "panda_finger_joint1"),
+                joint_from_name(self.robot, "panda_finger_joint2"),
+            ]
             self.info = PANDA_INFO
             self.ik_joints = get_ik_joints(self.robot, self.info, self.tool_link)
             set_joint_positions(self.robot, self.ik_joints, self.stable_config)
-            self.stable_pose = get_link_pose(self.robot,self.tool_link)
+            self.stable_pose = get_link_pose(self.robot, self.tool_link)
             self.constraint = None
-        
+            self.vsleep = VariableSleeper(TIME_STEP * STEP_SCALING)
 
     async def move_to_pose(self, target_pose):
+        self.vsleep.reset()
         tool_pose = get_link_pose(self.robot, self.tool_link)
-        pose_path = interpolate_poses(tool_pose, target_pose, pos_step_size=0.012, spacing= 'cubic')
+        pose_path = interpolate_poses(
+            tool_pose, target_pose, pos_step_size=0.012, spacing="cubic"
+        )
         for pose in pose_path:
-            conf = next(either_inverse_kinematics(
-                self.robot, self.info, self.tool_link, pose,
-                use_pybullet=False, max_distance=1.2, max_time=0.5,
-                max_candidates=100, verbose=False
-            ), None)
+            conf = next(
+                either_inverse_kinematics(
+                    self.robot,
+                    self.info,
+                    self.tool_link,
+                    pose,
+                    use_pybullet=False,
+                    max_distance=1.2,
+                    max_time=0.5,
+                    max_candidates=100,
+                    verbose=False,
+                ),
+                None,
+            )
             if conf is None:
-                print('Unable to find IK solution for Franka.')
+                print("Unable to find IK solution for Franka.")
                 return
             set_joint_positions(self.robot, self.ik_joints, conf)
-            await asyncio.sleep(TIME_STEP * STEP_SCALING)
-    
+            await self.vsleep()
+
     async def open_gripper(self):
         open_conf = [get_max_limit(self.robot, joint) for joint in self.gripper_joints]
         set_joint_positions(self.robot, self.gripper_joints, open_conf)
-        await asyncio.sleep(TIME_STEP * STEP_SCALING)
+        await asyncio.sleep(TIME_STEP * WAIT_SCALING)
 
     async def close_gripper(self):
         close_conf = [get_min_limit(self.robot, joint) for joint in self.gripper_joints]
         set_joint_positions(self.robot, self.gripper_joints, close_conf)
-        await asyncio.sleep(TIME_STEP * STEP_SCALING)
-    
+        await asyncio.sleep(TIME_STEP * WAIT_SCALING)
+
     async def grasp_gripper(self, obj):
         if self.constraint is None:
             close_until_collision(self.robot, self.gripper_joints, bodies=[obj])
@@ -74,7 +152,7 @@ class Franka:
             self.constraint = add_fixed_constraint(obj, self.robot, self.tool_link)
             await asyncio.sleep(TIME_STEP * WAIT_SCALING)
         else:
-            print('Franka: Gripper not free')
+            print("Franka: Gripper not free")
 
     async def release_gripper(self, obj):
         if self.constraint is not None:
@@ -90,25 +168,35 @@ class Franka:
             await asyncio.sleep(TIME_STEP * WAIT_SCALING)
             set_pose(obj, placed)
         else:
-            print('Franka: Gripper is empty')
+            print("Franka: Gripper is empty")
 
     async def reset_arm(self, num_steps=50, close_grip=True):
+        self.vsleep.reset()
         current_conf = get_joint_positions(self.robot, self.ik_joints)
-        joint_path =  interpolate(current_conf, self.stable_config, num_steps=num_steps, spacing='cubic')
+        joint_path = interpolate(
+            current_conf, self.stable_config, num_steps=num_steps, spacing="cubic"
+        )
         for conf in joint_path:
             set_joint_positions(self.robot, self.ik_joints, conf)
-            await asyncio.sleep(TIME_STEP * STEP_SCALING)
+            await self.vsleep()
         if close_grip is True:
             await self.close_gripper()
-    
+
     def get_grasp_pose(self, obj):
         body_pose = get_pose(obj)
-        center, (w,l,height) =  approximate_as_prism(obj, body_pose=body_pose)
-        pick_pose = multiply((center,body_pose[1]), Pose(point=[0, 0, 0.5 * height - 0.02]), Pose(euler=[0., PI, 0.]), Pose(euler=[0., 0., PI/2]))
+        center, (w, ln, height) = approximate_as_prism(obj, body_pose=body_pose)
+        pick_pose = multiply(
+            (center, body_pose[1]),
+            Pose(point=[0, 0, 0.5 * height - 0.02]),
+            Pose(euler=[0.0, PI, 0.0]),
+            Pose(euler=[0.0, 0.0, PI / 2]),
+        )
         return pick_pose
 
     def get_lift_pose(self, grasp_pose):
-        return (grasp_pose[0][0], grasp_pose[0][1], self.stable_pose[0][2]),grasp_pose[1]
+        return (grasp_pose[0][0], grasp_pose[0][1], self.stable_pose[0][2]), grasp_pose[
+            1
+        ]
 
     def get_place_pose(self, obj, place_mark, place_surface):
         temp_z = stable_z(obj, place_surface)
@@ -116,10 +204,10 @@ class Franka:
         place_mark = tuple(place_mark[:2]) + (temp_z,)
         body_pose = get_pose(obj)
         grasp = multiply(invert(body_pose), tool_pose)
-        body_quat = [0,0,0,1]
-        body_pose2 = (place_mark, body_quat) 
+        body_quat = [0, 0, 0, 1]
+        body_pose2 = (place_mark, body_quat)
         with LockRenderer():
-            print('[Franka] Paused Simulation for Planning Place Pose')
+            print("[Franka] Paused Simulation for Planning Place Pose")
             while True:
                 set_pose(obj, body_pose2)
                 if pairwise_collision(obj, place_surface):
@@ -132,11 +220,13 @@ class Franka:
                     temp_z -= 0.001
                     place_mark = tuple(place_mark[:2]) + (temp_z,)
                     body_pose2 = (place_mark, body_quat)
-            print('[Franka] Resumed')
-        center, (w, length, height) = approximate_as_prism(obj, body_pose= body_pose2)
-        pick_pose = multiply((center,body_pose2[1]), Pose(euler=[0., 0., PI/2]), grasp)
+            print("[Franka] Resumed")
+        center, (w, length, height) = approximate_as_prism(obj, body_pose=body_pose2)
+        pick_pose = multiply(
+            (center, body_pose2[1]), Pose(euler=[0.0, 0.0, PI / 2]), grasp
+        )
         return pick_pose
-    
+
     async def pick_up(self, obj):
         await self.open_gripper()
         franka_pick_pose = self.get_grasp_pose(obj)
@@ -153,18 +243,27 @@ class Franka:
         await self.move_to_pose(franka_place_pose)
         await self.release_gripper(obj)
         await self.move_to_pose(franka_lift_pose)
-        
+
 
 class PR2:
-    def __init__(self, pose, planning_arm='right'):
+    def __init__(self, pose, planning_arm="right"):
         with LockRenderer(), HideOutput(True):
             self.robot = load_model(DRAKE_PR2_URDF, fixed_base=True)
             set_pose(self.robot, pose)
-            set_joint_positions(self.robot, joints_from_names(self.robot,PR2_GROUPS['left_arm']), COMPACT_LEFT_ARM)
-            set_joint_positions(self.robot, joints_from_names(self.robot,PR2_GROUPS['right_arm']), rightarm_from_leftarm(COMPACT_LEFT_ARM))
+            set_joint_positions(
+                self.robot,
+                joints_from_names(self.robot, PR2_GROUPS["left_arm"]),
+                COMPACT_LEFT_ARM,
+            )
+            set_joint_positions(
+                self.robot,
+                joints_from_names(self.robot, PR2_GROUPS["right_arm"]),
+                rightarm_from_leftarm(COMPACT_LEFT_ARM),
+            )
             self.select_arm(planning_arm)
             self.constraint = None
             self.gripper_joints = get_gripper_joints(self.robot, self.arm)
+            self.vsleep = VariableSleeper(TIME_STEP * STEP_SCALING)
 
     def select_arm(self, planning_arm):
         self.arm = planning_arm
@@ -174,15 +273,21 @@ class PR2:
         self.gripper_joints = get_gripper_joints(self.robot, self.arm)
 
     async def plan_base_motion(self, goal_conf, obstacles=[]):
+        self.vsleep.reset()
         grip_conf = get_joint_positions(self.robot, self.gripper_joints)
         arm_conf = get_joint_positions(self.robot, self.ik_joints)
         disabled = get_disabled_collisions(self.robot)
-        base_joints = [joint_from_name(self.robot, name) for name in PR2_GROUPS['base']]
+        base_joints = [joint_from_name(self.robot, name) for name in PR2_GROUPS["base"]]
         with LockRenderer():
-            print('[PR2] Paused Simulation for Planning Base Motion')
-            base_path = plan_joint_motion(self.robot, base_joints[:2], goal_conf[:2],
-                                      obstacles=obstacles, disabled_collisions=disabled)
-            print('[PR2] Resumed')
+            print("[PR2] Paused Simulation for Planning Base Motion")
+            base_path = plan_joint_motion(
+                self.robot,
+                base_joints[:2],
+                goal_conf[:2],
+                obstacles=obstacles,
+                disabled_collisions=disabled,
+            )
+            print("[PR2] Resumed")
         if base_path is None:
             print("PR2: base path not found")
             return
@@ -190,36 +295,51 @@ class PR2:
             set_joint_positions(self.robot, base_joints[:2], q)
             set_joint_positions(self.robot, self.gripper_joints, grip_conf)
             set_joint_positions(self.robot, self.ik_joints, arm_conf)
-            await asyncio.sleep(TIME_STEP * STEP_SCALING)
+            await self.vsleep()
 
     async def arm_motion(self, target_pose):
+        self.vsleep.reset()
         tool_pose = get_link_pose(self.robot, self.tool_link)
-        pose_path = interpolate_poses(tool_pose, target_pose, pos_step_size=0.015, spacing='cubic')
+        pose_path = interpolate_poses(
+            tool_pose, target_pose, pos_step_size=0.015, spacing="cubic"
+        )
         for pose in pose_path:
-            conf = next(either_inverse_kinematics(
-                self.robot, self.arm_info, self.tool_link, pose, fixed_joints=[self.ik_joints[0]],
-                use_pybullet=False, max_distance=1.2, max_time=0.3,
-                max_candidates=100, verbose=False
-            ), None)
+            conf = next(
+                either_inverse_kinematics(
+                    self.robot,
+                    self.arm_info,
+                    self.tool_link,
+                    pose,
+                    fixed_joints=[self.ik_joints[0]],
+                    use_pybullet=False,
+                    max_distance=1.2,
+                    max_time=0.3,
+                    max_candidates=100,
+                    verbose=False,
+                ),
+                None,
+            )
             if conf is None:
                 print("PR2: IK not found")
                 return
             set_joint_positions(self.robot, self.ik_joints, conf)
-            await asyncio.sleep(TIME_STEP * STEP_SCALING)
+            await self.vsleep()
 
     async def open_gripper(self):
         open_arm(self.robot, self.arm)
-        await asyncio.sleep(TIME_STEP * STEP_SCALING)
-    
+        await asyncio.sleep(TIME_STEP * WAIT_SCALING)
+
     async def close_gripper(self):
         close_arm(self.robot, self.arm)
-        await asyncio.sleep(TIME_STEP * STEP_SCALING)
+        await asyncio.sleep(TIME_STEP * WAIT_SCALING)
 
     async def grasp_gripper(self, obj):
         if self.constraint is None:
             close_until_collision(self.robot, self.gripper_joints, bodies=[obj])
             await asyncio.sleep(TIME_STEP * WAIT_SCALING)
-            self.constraint = add_fixed_constraint(obj, self.robot, get_gripper_link(self.robot, self.arm))
+            self.constraint = add_fixed_constraint(
+                obj, self.robot, get_gripper_link(self.robot, self.arm)
+            )
             await asyncio.sleep(TIME_STEP * WAIT_SCALING)
         else:
             print("PR2: Gripper not free")
@@ -237,46 +357,59 @@ class PR2:
             set_pose(obj, placed)
             await asyncio.sleep(TIME_STEP * WAIT_SCALING)
             set_pose(obj, placed)
-            
+
         else:
             print("PR2: Gripper is empty")
 
-
     async def reset_arm(self, num_steps=25):
-        goal_conf = COMPACT_LEFT_ARM if self.arm == 'left' else rightarm_from_leftarm(COMPACT_LEFT_ARM)
+        self.vsleep.reset()
+        goal_conf = (
+            COMPACT_LEFT_ARM
+            if self.arm == "left"
+            else rightarm_from_leftarm(COMPACT_LEFT_ARM)
+        )
         current_conf = get_joint_positions(self.robot, self.ik_joints[1:])
-        joint_path =  interpolate(current_conf, goal_conf, num_steps=num_steps, spacing='cubic')
+        joint_path = interpolate(
+            current_conf, goal_conf, num_steps=num_steps, spacing="cubic"
+        )
         for conf in joint_path:
             set_joint_positions(self.robot, self.ik_joints[1:], conf)
-            await asyncio.sleep(TIME_STEP * STEP_SCALING)
+            await self.vsleep()
         await self.close_gripper()
-        
 
-    
     def get_grasp_pose(self, obj):
         body_pose = get_pose(obj)
-        center, (w, length, height) = approximate_as_prism(obj, body_pose= body_pose)
-        pick_pose = multiply((center,body_pose[1]), Pose(point=[0.045 - 0.5 * length, 0., 0.5 * height - 0.02]))
+        center, (w, length, height) = approximate_as_prism(obj, body_pose=body_pose)
+        pick_pose = multiply(
+            (center, body_pose[1]),
+            Pose(point=[0.045 - 0.5 * length, 0.0, 0.5 * height - 0.02]),
+        )
         return pick_pose
-    
+
     def grasp_approach_base(self, place_mark):
         base_pose = get_pose(self.robot)
-        offset =  -0.2 if self.arm == 'left' else 0.2
-        return tuple(map(lambda x, y: x + y, (-0.85,offset,0.), tuple(place_mark[:2]) + (base_pose[0][2],)))
-    
+        offset = -0.2 if self.arm == "left" else 0.2
+        return tuple(
+            map(
+                lambda x, y: x + y,
+                (-0.85, offset, 0.0),
+                tuple(place_mark[:2]) + (base_pose[0][2],),
+            )
+        )
+
     def get_lift_pose(self, grasp_pose):
         return multiply(grasp_pose, Pose(point=[-0.02, 0.0, 0.14]))
-    
+
     def get_place_pose(self, obj, place_mark, place_surface):
         temp_z = stable_z(obj, place_surface)
         tool_pose = get_link_pose(self.robot, self.tool_link)
         place_mark = tuple(place_mark[:2]) + (temp_z,)
         body_pose = get_pose(obj)
         grasp = multiply(invert(body_pose), tool_pose)
-        body_quat = [0,0,0,1]
-        body_pose2 = (place_mark, body_quat) 
+        body_quat = [0, 0, 0, 1]
+        body_pose2 = (place_mark, body_quat)
         with LockRenderer():
-            print('[PR2] Paused Simulation for Planning Place Pose')
+            print("[PR2] Paused Simulation for Planning Place Pose")
             while True:
                 set_pose(obj, body_pose2)
                 if pairwise_collision(obj, place_surface):
@@ -289,11 +422,11 @@ class PR2:
                     temp_z -= 0.001
                     place_mark = tuple(place_mark[:2]) + (temp_z,)
                     body_pose2 = (place_mark, body_quat)
-            print('[PR2] Resumed')
-        center, (w, length, height) = approximate_as_prism(obj, body_pose= body_pose2)
-        pick_pose = multiply((center,body_pose2[1]), grasp)
+            print("[PR2] Resumed")
+        center, (w, length, height) = approximate_as_prism(obj, body_pose=body_pose2)
+        pick_pose = multiply((center, body_pose2[1]), grasp)
         return pick_pose
-    
+
     async def pick_up(self, obj):
         grasp_pose = self.get_grasp_pose(obj)
         lift_pose = self.get_lift_pose(grasp_pose)
@@ -333,22 +466,25 @@ class ConditionBehavior(pt.behaviour.Behaviour):
 
 class CommandBehavior(pt.behaviour.Behaviour):
     def __init__(self, name, command_queue, status_dict, command, *args, **kwargs):
-        
         super().__init__(name)
         self.command_queue = command_queue
-        self.status_dict = status_dict # 0 - Inactive, 1 - Running, 2 - Success
+        self.status_dict = status_dict  # 0 - Inactive, 1 - Running, 2 - Success
         self.command = command
         self.args = args
         self.kwargs = kwargs
 
     def initialise(self):
-        self.status_dict[self.name] = 0  
+        self.status_dict[self.name] = 0
 
     def update(self):
         if self.status_dict[self.name] == 0:
-            self.command_queue.put_nowait((self.name, self.command, self.args, self.kwargs))
-            self.status_dict[self.name] = 1 
-            print(f"[BT] Command sent -> {self.name}, args={self.args}, kwargs={self.kwargs}")
+            self.command_queue.put_nowait(
+                (self.name, self.command, self.args, self.kwargs)
+            )
+            self.status_dict[self.name] = 1
+            print(
+                f"[BT] Command sent -> {self.name}, args={self.args}, kwargs={self.kwargs}"
+            )
             return pt.common.Status.RUNNING
         elif self.status_dict[self.name] == 2:
             print(f"[BT] Command complete -> SUCCESS ({self.name})")
@@ -375,8 +511,8 @@ class Env:
 
         self.franka_pose = Pose(point=[1.8, 3.5, 0.625])
         self.pr2_pose = Pose()
-        table1_pose = ([2.5, 1.2, 0.], quat_from_euler(Euler(yaw=PI / 2)))
-        table2_pose = ([2., 3., 0.], quat_from_euler(Euler(yaw=PI / 2)))
+        table1_pose = ([2.5, 1.2, 0.0], quat_from_euler(Euler(yaw=PI / 2)))
+        table2_pose = ([2.0, 3.0, 0.0], quat_from_euler(Euler(yaw=PI / 2)))
         self.common_place_location = (1.8, 3.0, 0.625)
 
         table1 = load_pybullet("models/table_collision/table.urdf", fixed_base=True)
@@ -388,7 +524,6 @@ class Env:
         plate = load_pybullet("models/dinnerware/plate.urdf", fixed_base=True)
         plate_pose = Pose(point=[2.3, 3.5, stable_z(plate, table2)])
         set_pose(plate, plate_pose)
-        
 
         cup = load_pybullet("models/dinnerware/cup/cup_small.urdf", fixed_base=False)
         cup_pose = Pose(point=[1.8, 2.5, stable_z(cup, table2)])
@@ -396,23 +531,29 @@ class Env:
 
         self.franka_place_location, _ = plate_pose
 
-        block1 = load_pybullet('models/drake/objects/block_for_pick_and_place_small.urdf', fixed_base=False)
-        set_color(block1, RGBA(0.7,0.7,0.2,1.))
-        set_pose(block1, Pose(point=[2.3,1.4,stable_z(block1, table1)]))
+        block1 = load_pybullet(
+            "models/drake/objects/block_for_pick_and_place_small.urdf", fixed_base=False
+        )
+        set_color(block1, RGBA(0.7, 0.7, 0.2, 1.0))
+        set_pose(block1, Pose(point=[2.3, 1.4, stable_z(block1, table1)]))
         self.block1 = block1
 
-        block2 = load_pybullet('models/drake/objects/block_for_pick_and_place_small.urdf', fixed_base=False)
-        set_color(block2, RGBA(0.6,0.6,0.6,1.))
-        set_pose(block2, Pose(point=[2.1,1., stable_z(block2, table1)]))
+        block2 = load_pybullet(
+            "models/drake/objects/block_for_pick_and_place_small.urdf", fixed_base=False
+        )
+        set_color(block2, RGBA(0.6, 0.6, 0.6, 1.0))
+        set_pose(block2, Pose(point=[2.1, 1.0, stable_z(block2, table1)]))
         self.block2 = block2
 
-        block3 = load_pybullet('models/drake/objects/block_for_pick_and_place_small.urdf', fixed_base=False)
-        set_color(block3, RGBA(0.1,0.5,0.1,1.))
-        set_pose(block3, Pose(point=[2.2,0.8,stable_z(block3, table1)]))
+        block3 = load_pybullet(
+            "models/drake/objects/block_for_pick_and_place_small.urdf", fixed_base=False
+        )
+        set_color(block3, RGBA(0.1, 0.5, 0.1, 1.0))
+        set_pose(block3, Pose(point=[2.2, 0.8, stable_z(block3, table1)]))
         self.block3 = block3
 
         self.franka = Franka(self.franka_pose)
-        self.pr2 = PR2(self.pr2_pose, 'left')
+        self.pr2 = PR2(self.pr2_pose, "left")
 
         self.obstacles = [table1, table2, self.franka.robot]
 
@@ -420,69 +561,151 @@ class Env:
 
     def is_common_place_empty(self):
         x, y, z = self.common_place_location
-        lower = [x-0.05, y-0.05, z-0.01]
-        upper = [x+0.05, y+0.05, z+0.03]
+        lower = [x - 0.05, y - 0.05, z - 0.01]
+        upper = [x + 0.05, y + 0.05, z + 0.03]
         return len(get_bodies_in_region((lower, upper))) <= 1
 
     def create_trees(self):
-
         pr2_root = pt.composites.Sequence("PR2TaskPlan", True)
 
         pr2_task1 = pt.composites.Sequence("PR2PickPlaceTask1", True)
         pr2_task2 = pt.composites.Sequence("PR2PickPlaceTask2", True)
         pr2_task3 = pt.composites.Sequence("PR2PickPlaceTask3", True)
 
-        p11 = CommandBehavior("PR2: MoveToObject1", self.pr2_command_queue, self.pr2_status_dict, self.pr2.move_base_to_location, 
-                              get_pose(self.block1)[0], obstacles=self.obstacles)
-        
-        p12 = CommandBehavior("PR2: PickUpObject1", self.pr2_command_queue, self.pr2_status_dict, self.pr2.pick_up, self.block1)
+        p11 = CommandBehavior(
+            "PR2: MoveToObject1",
+            self.pr2_command_queue,
+            self.pr2_status_dict,
+            self.pr2.move_base_to_location,
+            get_pose(self.block1)[0],
+            obstacles=self.obstacles,
+        )
 
-        p13 = CommandBehavior("PR2: MoveToPlacement", self.pr2_command_queue, self.pr2_status_dict, self.pr2.move_base_to_location,
-                               self.common_place_location, obstacles=self.obstacles)
+        p12 = CommandBehavior(
+            "PR2: PickUpObject1",
+            self.pr2_command_queue,
+            self.pr2_status_dict,
+            self.pr2.pick_up,
+            self.block1,
+        )
+
+        p13 = CommandBehavior(
+            "PR2: MoveToPlacement",
+            self.pr2_command_queue,
+            self.pr2_status_dict,
+            self.pr2.move_base_to_location,
+            self.common_place_location,
+            obstacles=self.obstacles,
+        )
 
         p14 = ConditionBehavior("PR2: CheckPlaceEmpty", self.is_common_place_empty)
 
-        p15 = CommandBehavior("PR2: PlaceObject1", self.pr2_command_queue, self.pr2_status_dict, self.pr2.place,
-                               self.block1, self.common_place_location, self.table2)
+        p15 = CommandBehavior(
+            "PR2: PlaceObject1",
+            self.pr2_command_queue,
+            self.pr2_status_dict,
+            self.pr2.place,
+            self.block1,
+            self.common_place_location,
+            self.table2,
+        )
 
-        p16 = CommandBehavior("PR2: ResetArm", self.pr2_command_queue, self.pr2_status_dict, self.pr2.reset_arm)
+        p16 = CommandBehavior(
+            "PR2: ResetArm",
+            self.pr2_command_queue,
+            self.pr2_status_dict,
+            self.pr2.reset_arm,
+        )
 
+        p21 = CommandBehavior(
+            "PR2: MoveToObject2",
+            self.pr2_command_queue,
+            self.pr2_status_dict,
+            self.pr2.move_base_to_location,
+            get_pose(self.block2)[0],
+            obstacles=self.obstacles,
+        )
 
+        p22 = CommandBehavior(
+            "PR2: PickUpObject2",
+            self.pr2_command_queue,
+            self.pr2_status_dict,
+            self.pr2.pick_up,
+            self.block2,
+        )
 
-        p21 = CommandBehavior("PR2: MoveToObject2", self.pr2_command_queue, self.pr2_status_dict, self.pr2.move_base_to_location, 
-                              get_pose(self.block2)[0], obstacles=self.obstacles)
-
-        p22 = CommandBehavior("PR2: PickUpObject2", self.pr2_command_queue, self.pr2_status_dict, self.pr2.pick_up, self.block2)
-
-        p23 = CommandBehavior("PR2: MoveToPlacement", self.pr2_command_queue, self.pr2_status_dict, self.pr2.move_base_to_location,
-                            self.common_place_location, obstacles=self.obstacles)
+        p23 = CommandBehavior(
+            "PR2: MoveToPlacement",
+            self.pr2_command_queue,
+            self.pr2_status_dict,
+            self.pr2.move_base_to_location,
+            self.common_place_location,
+            obstacles=self.obstacles,
+        )
 
         p24 = ConditionBehavior("PR2: CheckPlaceEmpty", self.is_common_place_empty)
 
-        p25 = CommandBehavior("PR2: PlaceObject2", self.pr2_command_queue, self.pr2_status_dict,self.pr2.place, 
-                            self.block2, self.common_place_location, self.table2)
+        p25 = CommandBehavior(
+            "PR2: PlaceObject2",
+            self.pr2_command_queue,
+            self.pr2_status_dict,
+            self.pr2.place,
+            self.block2,
+            self.common_place_location,
+            self.table2,
+        )
 
-        p26 = CommandBehavior("PR2: ResetArm", self.pr2_command_queue, self.pr2_status_dict, self.pr2.reset_arm)
-                            
+        p26 = CommandBehavior(
+            "PR2: ResetArm",
+            self.pr2_command_queue,
+            self.pr2_status_dict,
+            self.pr2.reset_arm,
+        )
 
+        p31 = CommandBehavior(
+            "PR2: MoveToObject3",
+            self.pr2_command_queue,
+            self.pr2_status_dict,
+            self.pr2.move_base_to_location,
+            get_pose(self.block3)[0],
+            obstacles=self.obstacles,
+        )
 
-        p31 = CommandBehavior("PR2: MoveToObject3", self.pr2_command_queue, self.pr2_status_dict, self.pr2.move_base_to_location,
-                             get_pose(self.block3)[0], obstacles=self.obstacles)
-                            
+        p32 = CommandBehavior(
+            "PR2: PickUpObject3",
+            self.pr2_command_queue,
+            self.pr2_status_dict,
+            self.pr2.pick_up,
+            self.block3,
+        )
 
-        p32 = CommandBehavior("PR2: PickUpObject3", self.pr2_command_queue, self.pr2_status_dict, self.pr2.pick_up, self.block3)
-                            
-
-        p33 = CommandBehavior("PR2: MoveToPlacement", self.pr2_command_queue, self.pr2_status_dict, self.pr2.move_base_to_location,
-                             self.common_place_location, obstacles=self.obstacles)
+        p33 = CommandBehavior(
+            "PR2: MoveToPlacement",
+            self.pr2_command_queue,
+            self.pr2_status_dict,
+            self.pr2.move_base_to_location,
+            self.common_place_location,
+            obstacles=self.obstacles,
+        )
 
         p34 = ConditionBehavior("PR2: CheckPlaceEmpty", self.is_common_place_empty)
 
-        p35 = CommandBehavior("PR2: PlaceObject3", self.pr2_command_queue, self.pr2_status_dict, self.pr2.place, 
-                              self.block3, self.common_place_location, self.table2)
+        p35 = CommandBehavior(
+            "PR2: PlaceObject3",
+            self.pr2_command_queue,
+            self.pr2_status_dict,
+            self.pr2.place,
+            self.block3,
+            self.common_place_location,
+            self.table2,
+        )
 
-        p36 = CommandBehavior("PR2: ResetArm", self.pr2_command_queue, self.pr2_status_dict, self.pr2.reset_arm)
-
+        p36 = CommandBehavior(
+            "PR2: ResetArm",
+            self.pr2_command_queue,
+            self.pr2_status_dict,
+            self.pr2.reset_arm,
+        )
 
         pr2_task1.add_children([p11, p12, p13, p14, p15, p16])
         pr2_task2.add_children([p21, p22, p23, p24, p25, p26])
@@ -492,53 +715,122 @@ class Env:
 
         self.pr2_tree = pt.trees.BehaviourTree(pr2_root)
 
-
         franka_root = pt.composites.Sequence("FrankaTaskPlan", True)
 
         franka_task1 = pt.composites.Sequence("FrankaPickPlaceTask1", True)
         franka_task2 = pt.composites.Sequence("FrankaPickPlaceTask2", True)
         franka_task3 = pt.composites.Sequence("FrankaPickPlaceTask3", True)
 
-        f11 = ConditionBehavior("Franka: CheckPlaceOccupied", lambda: not self.is_common_place_empty())  
+        f11 = ConditionBehavior(
+            "Franka: CheckPlaceOccupied", lambda: not self.is_common_place_empty()
+        )
 
-        f12 = CommandBehavior("Franka: PickUpObject1", self.franka_command_queue, self.franka_status_dict, self.franka.pick_up, 
-                              self.block1)
+        f12 = CommandBehavior(
+            "Franka: PickUpObject1",
+            self.franka_command_queue,
+            self.franka_status_dict,
+            self.franka.pick_up,
+            self.block1,
+        )
 
-        f13 = CommandBehavior("Franka: ResetArm", self.franka_command_queue, self.franka_status_dict, self.franka.reset_arm, 
-                              close_grip = False)
+        f13 = CommandBehavior(
+            "Franka: ResetArm",
+            self.franka_command_queue,
+            self.franka_status_dict,
+            self.franka.reset_arm,
+            close_grip=False,
+        )
 
-        f14 = CommandBehavior("Franka: PlaceObject1", self.franka_command_queue, self.franka_status_dict,
-                            self.franka.place, self.block1, self.franka_place_location, self.plate)
+        f14 = CommandBehavior(
+            "Franka: PlaceObject1",
+            self.franka_command_queue,
+            self.franka_status_dict,
+            self.franka.place,
+            self.block1,
+            self.franka_place_location,
+            self.plate,
+        )
 
-        f15 = CommandBehavior("Franka: ResetArm", self.franka_command_queue, self.franka_status_dict, self.franka.reset_arm)
+        f15 = CommandBehavior(
+            "Franka: ResetArm",
+            self.franka_command_queue,
+            self.franka_status_dict,
+            self.franka.reset_arm,
+        )
 
+        f21 = ConditionBehavior(
+            "Franka: CheckPlaceOccupied", lambda: not self.is_common_place_empty()
+        )
 
-        f21 = ConditionBehavior("Franka: CheckPlaceOccupied", lambda: not self.is_common_place_empty())
+        f22 = CommandBehavior(
+            "Franka: PickUpObject2",
+            self.franka_command_queue,
+            self.franka_status_dict,
+            self.franka.pick_up,
+            self.block2,
+        )
 
-        f22 = CommandBehavior("Franka: PickUpObject2", self.franka_command_queue, self.franka_status_dict,
-                            self.franka.pick_up, self.block2)
+        f23 = CommandBehavior(
+            "Franka: ResetArm",
+            self.franka_command_queue,
+            self.franka_status_dict,
+            self.franka.reset_arm,
+            close_grip=False,
+        )
 
-        f23 = CommandBehavior("Franka: ResetArm", self.franka_command_queue, self.franka_status_dict,
-                            self.franka.reset_arm, close_grip = False)
+        f24 = CommandBehavior(
+            "Franka: PlaceObject2",
+            self.franka_command_queue,
+            self.franka_status_dict,
+            self.franka.place,
+            self.block2,
+            self.franka_place_location,
+            self.block1,
+        )
 
-        f24 = CommandBehavior("Franka: PlaceObject2", self.franka_command_queue, self.franka_status_dict,
-                            self.franka.place, self.block2, self.franka_place_location, self.block1)
+        f25 = CommandBehavior(
+            "Franka: ResetArm",
+            self.franka_command_queue,
+            self.franka_status_dict,
+            self.franka.reset_arm,
+        )
 
-        f25 = CommandBehavior("Franka: ResetArm", self.franka_command_queue, self.franka_status_dict, self.franka.reset_arm)
+        f31 = ConditionBehavior(
+            "Franka: CheckPlaceOccupied", lambda: not self.is_common_place_empty()
+        )
 
+        f32 = CommandBehavior(
+            "Franka: PickUpObject3",
+            self.franka_command_queue,
+            self.franka_status_dict,
+            self.franka.pick_up,
+            self.block3,
+        )
 
-        f31 = ConditionBehavior("Franka: CheckPlaceOccupied", lambda: not self.is_common_place_empty())
+        f33 = CommandBehavior(
+            "Franka: ResetArm",
+            self.franka_command_queue,
+            self.franka_status_dict,
+            self.franka.reset_arm,
+            close_grip=False,
+        )
 
-        f32 = CommandBehavior("Franka: PickUpObject3", self.franka_command_queue, self.franka_status_dict,
-                            self.franka.pick_up, self.block3)
+        f34 = CommandBehavior(
+            "Franka: PlaceObject3",
+            self.franka_command_queue,
+            self.franka_status_dict,
+            self.franka.place,
+            self.block3,
+            self.franka_place_location,
+            self.block2,
+        )
 
-        f33 = CommandBehavior("Franka: ResetArm", self.franka_command_queue, self.franka_status_dict,
-                            self.franka.reset_arm, close_grip = False)
-
-        f34 = CommandBehavior("Franka: PlaceObject3", self.franka_command_queue, self.franka_status_dict,
-                            self.franka.place, self.block3, self.franka_place_location, self.block2)
-
-        f35 = CommandBehavior("Franka: ResetArm", self.franka_command_queue, self.franka_status_dict, self.franka.reset_arm)
+        f35 = CommandBehavior(
+            "Franka: ResetArm",
+            self.franka_command_queue,
+            self.franka_status_dict,
+            self.franka.reset_arm,
+        )
 
         franka_task1.add_children([f11, f12, f13, f14, f15])
         franka_task2.add_children([f21, f22, f23, f24, f25])
@@ -553,10 +845,18 @@ class Env:
         while not (self.franka_done and self.pr2_done):
             if not self.pr2_done:
                 self.pr2_tree.tick()
-                self.pr2_done = True if self.pr2_tree.root.status == pt.common.Status.SUCCESS else False
+                self.pr2_done = (
+                    True
+                    if self.pr2_tree.root.status == pt.common.Status.SUCCESS
+                    else False
+                )
             if not self.franka_done:
                 self.franka_tree.tick()
-                self.franka_done = True if self.franka_tree.root.status == pt.common.Status.SUCCESS else False
+                self.franka_done = (
+                    True
+                    if self.franka_tree.root.status == pt.common.Status.SUCCESS
+                    else False
+                )
             time.sleep(0.1)
 
     async def run_simulation(self):
@@ -564,8 +864,7 @@ class Env:
             for _ in range(NUM_SIM):
                 p.stepSimulation()
             await asyncio.sleep(TIME_STEP * SIM_SCALING)
-    
-        
+
     async def execute_pr2(self):
         while not self.pr2_done:
             if not self.pr2_command_queue.empty():
@@ -574,8 +873,6 @@ class Env:
                 await action(*args, **kwargs)
                 self.pr2_status_dict[key] = 2
             await asyncio.sleep(TIME_STEP * WAIT_SCALING)
-            
-
 
     async def execute_franka(self):
         while not self.franka_done:
@@ -585,29 +882,31 @@ class Env:
                 await action(*args, **kwargs)
                 self.franka_status_dict[key] = 2
             await asyncio.sleep(TIME_STEP * WAIT_SCALING)
-    
+
     async def execute_task(self):
-        await asyncio.gather(self.execute_franka(),self.execute_pr2())
-    
+        await asyncio.gather(self.execute_franka(), self.execute_pr2())
+
+
 async def main():
     env = Env(use_gui=True)
     bt_thread = threading.Thread(target=env.bt_loop, daemon=True)
 
-    wait_if_gui('Start?')
-    print('The Behavior Trees for Individual Robots:')
+    wait_if_gui("Start?")
+    print("The Behavior Trees for Individual Robots:")
     print(pt.display.ascii_tree(env.pr2_tree.root))
     print(pt.display.ascii_tree(env.franka_tree.root))
-    start_time =  time.perf_counter()
-    
+    start_time = time.perf_counter()
+
     bt_thread.start()
-    
-    await asyncio.gather(env.run_simulation(),env.execute_franka(),env.execute_pr2())
-    
+
+    await asyncio.gather(env.run_simulation(), env.execute_franka(), env.execute_pr2())
+    # await asyncio.gather(env.run_simulation(),env.execute_task())
+
     end_time = time.perf_counter()
-    print(f"Execution time: {end_time - start_time :.4f} seconds")
-    wait_if_gui('Finish?')
+    print(f"Execution time: {end_time - start_time:.4f} seconds")
+    wait_if_gui("Finish?")
     disconnect()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(main())

@@ -5012,7 +5012,7 @@ def interpolate(value1, value2, num_steps=2, spacing = 'linear'):
         for w in np.linspace(0, 1, num=num_steps, endpoint=True)[1:-1]:
             yield convex_combination(value1, value2, w=w)
     if spacing == 'cubic':
-        for w in np.linspace(0, 1, num=num_steps, endpoint=True)[1:-1]:
+        for w in cubicspace(0, 1, num=num_steps, endpoint=True)[1:-1]:
             yield convex_combination(value1, value2, w=w)
     yield value2
 
