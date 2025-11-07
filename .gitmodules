@@ -1,3 +1,6 @@
 [submodule "motion"]
 	path = motion
 	url = https://github.com/sheriffMelamine/motion-planners
+[submodule "task_planning_tools"]
+	path = task_planning_tools
+	url = https://github.com/sheriffMelamine/task_planning_tools.git

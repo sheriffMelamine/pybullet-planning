@@ -3,12 +3,14 @@ import time
 import py_trees as pt  # type: ignore
 import threading
 import asyncio
+from collections.abc import Callable
 import pybullet as p  # type: ignore
 from task_planning_tools.behavior_tree import (
     ConditionBehavior,
     CommandBehavior,
     BehaviorTreePlan,
     merged_loop,
+    are_all_trees_done,
 )
 
 from pybullet_tools.pr2_utils import (
@@ -455,56 +457,11 @@ class PR2:
         await self.plan_base_motion(goal, obstacles=obstacles)
 
 
-class ConditionBehavior(pt.behaviour.Behaviour):
-    def __init__(self, name, condition_fn, *args, **kwargs):
-        super().__init__(name)
-        self.fn = condition_fn
-        self.args = args
-        self.kwargs = kwargs
-
-    def update(self):
-        if self.fn(*self.args, **self.kwargs):
-            print(f"[BT] Condition OK -> SUCCESS ({self.name}).")
-            return pt.common.Status.SUCCESS
-        else:
-            return pt.common.Status.RUNNING
-
-
-class CommandBehavior(pt.behaviour.Behaviour):
-    def __init__(self, name, command_queue, status_dict, command, *args, **kwargs):
-        super().__init__(name)
-        self.command_queue = command_queue
-        self.status_dict = status_dict  # 0 - Inactive, 1 - Running, 2 - Success
-        self.command = command
-        self.args = args
-        self.kwargs = kwargs
-
-    def initialise(self):
-        self.status_dict[self.name] = 0
-
-    def update(self):
-        if self.status_dict[self.name] == 0:
-            self.command_queue.put_nowait(
-                (self.name, self.command, self.args, self.kwargs)
-            )
-            self.status_dict[self.name] = 1
-            print(
-                f"[BT] Command sent -> {self.name}, args={self.args}, kwargs={self.kwargs}"
-            )
-            return pt.common.Status.RUNNING
-        elif self.status_dict[self.name] == 2:
-            print(f"[BT] Command complete -> SUCCESS ({self.name})")
-            return pt.common.Status.SUCCESS
-        else:
-            return pt.common.Status.RUNNING
-
-
 class Env:
     def __init__(self, use_gui=True):
         connect(use_gui=use_gui)
         add_data_path()
         self._setup_scene()
-        self._create_trees()
 
     def _setup_scene(self):
         self.plane = p.loadURDF("plane.urdf")
@@ -565,163 +522,20 @@ class Env:
         upper = [x + 0.05, y + 0.05, z + 0.03]
         return len(get_bodies_in_region((lower, upper))) <= 1
 
-    def _create_trees(self):
-        self.pr2_done = False
-        self.franka_done = False
-        self.pr2_command_queue = asyncio.Queue()
-        self.franka_command_queue = asyncio.Queue()
-        self.pr2_status_dict = dict()
-        self.franka_status_dict = dict()
+    async def run_simulation(self, stop_condition_fn: Callable, *args):
+        while not stop_condition_fn(*args):
+            for _ in range(NUM_SIM):
+                p.stepSimulation()
+            await asyncio.sleep(TIME_STEP * SIM_SCALING)
 
-        pr2_root = pt.composites.Sequence("PR2TaskPlan", True)
 
-        pr2_task1 = pt.composites.Sequence("PR2PickPlaceTask1", True)
-        pr2_task2 = pt.composites.Sequence("PR2PickPlaceTask2", True)
-        pr2_task3 = pt.composites.Sequence("PR2PickPlaceTask3", True)
+class FrankaTree(BehaviorTreePlan):
+    def __init__(self, env, robot):
+        self.env = env
+        self.robot = robot
+        super().__init__()
 
-        p11 = CommandBehavior(
-            "PR2: MoveToObject1",
-            self.pr2_command_queue,
-            self.pr2_status_dict,
-            self.pr2.move_base_to_location,
-            get_pose(self.block1)[0],
-            obstacles=self.obstacles,
-        )
-
-        p12 = CommandBehavior(
-            "PR2: PickUpObject1",
-            self.pr2_command_queue,
-            self.pr2_status_dict,
-            self.pr2.pick_up,
-            self.block1,
-        )
-
-        p13 = CommandBehavior(
-            "PR2: MoveToPlacement",
-            self.pr2_command_queue,
-            self.pr2_status_dict,
-            self.pr2.move_base_to_location,
-            self.common_place_location,
-            obstacles=self.obstacles,
-        )
-
-        p14 = ConditionBehavior("PR2: CheckPlaceEmpty", self.is_common_place_empty)
-
-        p15 = CommandBehavior(
-            "PR2: PlaceObject1",
-            self.pr2_command_queue,
-            self.pr2_status_dict,
-            self.pr2.place,
-            self.block1,
-            self.common_place_location,
-            self.table2,
-        )
-
-        p16 = CommandBehavior(
-            "PR2: ResetArm",
-            self.pr2_command_queue,
-            self.pr2_status_dict,
-            self.pr2.reset_arm,
-        )
-
-        p21 = CommandBehavior(
-            "PR2: MoveToObject2",
-            self.pr2_command_queue,
-            self.pr2_status_dict,
-            self.pr2.move_base_to_location,
-            get_pose(self.block2)[0],
-            obstacles=self.obstacles,
-        )
-
-        p22 = CommandBehavior(
-            "PR2: PickUpObject2",
-            self.pr2_command_queue,
-            self.pr2_status_dict,
-            self.pr2.pick_up,
-            self.block2,
-        )
-
-        p23 = CommandBehavior(
-            "PR2: MoveToPlacement",
-            self.pr2_command_queue,
-            self.pr2_status_dict,
-            self.pr2.move_base_to_location,
-            self.common_place_location,
-            obstacles=self.obstacles,
-        )
-
-        p24 = ConditionBehavior("PR2: CheckPlaceEmpty", self.is_common_place_empty)
-
-        p25 = CommandBehavior(
-            "PR2: PlaceObject2",
-            self.pr2_command_queue,
-            self.pr2_status_dict,
-            self.pr2.place,
-            self.block2,
-            self.common_place_location,
-            self.table2,
-        )
-
-        p26 = CommandBehavior(
-            "PR2: ResetArm",
-            self.pr2_command_queue,
-            self.pr2_status_dict,
-            self.pr2.reset_arm,
-        )
-
-        p31 = CommandBehavior(
-            "PR2: MoveToObject3",
-            self.pr2_command_queue,
-            self.pr2_status_dict,
-            self.pr2.move_base_to_location,
-            get_pose(self.block3)[0],
-            obstacles=self.obstacles,
-        )
-
-        p32 = CommandBehavior(
-            "PR2: PickUpObject3",
-            self.pr2_command_queue,
-            self.pr2_status_dict,
-            self.pr2.pick_up,
-            self.block3,
-        )
-
-        p33 = CommandBehavior(
-            "PR2: MoveToPlacement",
-            self.pr2_command_queue,
-            self.pr2_status_dict,
-            self.pr2.move_base_to_location,
-            self.common_place_location,
-            obstacles=self.obstacles,
-        )
-
-        p34 = ConditionBehavior("PR2: CheckPlaceEmpty", self.is_common_place_empty)
-
-        p35 = CommandBehavior(
-            "PR2: PlaceObject3",
-            self.pr2_command_queue,
-            self.pr2_status_dict,
-            self.pr2.place,
-            self.block3,
-            self.common_place_location,
-            self.table2,
-        )
-
-        p36 = CommandBehavior(
-            "PR2: ResetArm",
-            self.pr2_command_queue,
-            self.pr2_status_dict,
-            self.pr2.reset_arm,
-        )
-
-        pr2_task1.add_children([p11, p12, p13, p14, p15, p16])
-        pr2_task2.add_children([p21, p22, p23, p24, p25, p26])
-        pr2_task3.add_children([p31, p32, p33, p34, p35, p36])
-
-        pr2_root.add_children([pr2_task1, pr2_task2, pr2_task3])
-
-        self.pr2_tree = pt.trees.BehaviourTree(pr2_root)
-
+    def create_tree(self):
         franka_root = pt.composites.Sequence("FrankaTaskPlan", True)
 
         franka_task1 = pt.composites.Sequence("FrankaPickPlaceTask1", True)
@@ -729,114 +543,114 @@ class Env:
         franka_task3 = pt.composites.Sequence("FrankaPickPlaceTask3", True)
 
         f11 = ConditionBehavior(
-            "Franka: CheckPlaceOccupied", lambda: not self.is_common_place_empty()
+            "Franka: CheckPlaceOccupied", lambda: not self.env.is_common_place_empty()
         )
 
         f12 = CommandBehavior(
             "Franka: PickUpObject1",
-            self.franka_command_queue,
-            self.franka_status_dict,
-            self.franka.pick_up,
-            self.block1,
+            self.command_queue,
+            self.status_dict,
+            self.robot.pick_up,
+            self.env.block1,
         )
 
         f13 = CommandBehavior(
             "Franka: ResetArm",
-            self.franka_command_queue,
-            self.franka_status_dict,
-            self.franka.reset_arm,
+            self.command_queue,
+            self.status_dict,
+            self.robot.reset_arm,
             close_grip=False,
         )
 
         f14 = CommandBehavior(
             "Franka: PlaceObject1",
-            self.franka_command_queue,
-            self.franka_status_dict,
-            self.franka.place,
-            self.block1,
-            self.franka_place_location,
-            self.plate,
+            self.command_queue,
+            self.status_dict,
+            self.robot.place,
+            self.env.block1,
+            self.env.franka_place_location,
+            self.env.plate,
         )
 
         f15 = CommandBehavior(
             "Franka: ResetArm",
-            self.franka_command_queue,
-            self.franka_status_dict,
-            self.franka.reset_arm,
+            self.command_queue,
+            self.status_dict,
+            self.robot.reset_arm,
         )
 
         f21 = ConditionBehavior(
-            "Franka: CheckPlaceOccupied", lambda: not self.is_common_place_empty()
+            "Franka: CheckPlaceOccupied", lambda: not self.env.is_common_place_empty()
         )
 
         f22 = CommandBehavior(
             "Franka: PickUpObject2",
-            self.franka_command_queue,
-            self.franka_status_dict,
-            self.franka.pick_up,
-            self.block2,
+            self.command_queue,
+            self.status_dict,
+            self.robot.pick_up,
+            self.env.block2,
         )
 
         f23 = CommandBehavior(
             "Franka: ResetArm",
-            self.franka_command_queue,
-            self.franka_status_dict,
-            self.franka.reset_arm,
+            self.command_queue,
+            self.status_dict,
+            self.robot.reset_arm,
             close_grip=False,
         )
 
         f24 = CommandBehavior(
             "Franka: PlaceObject2",
-            self.franka_command_queue,
-            self.franka_status_dict,
-            self.franka.place,
-            self.block2,
-            self.franka_place_location,
-            self.block1,
+            self.command_queue,
+            self.status_dict,
+            self.robot.place,
+            self.env.block2,
+            self.env.franka_place_location,
+            self.env.block1,
         )
 
         f25 = CommandBehavior(
             "Franka: ResetArm",
-            self.franka_command_queue,
-            self.franka_status_dict,
-            self.franka.reset_arm,
+            self.command_queue,
+            self.status_dict,
+            self.robot.reset_arm,
         )
 
         f31 = ConditionBehavior(
-            "Franka: CheckPlaceOccupied", lambda: not self.is_common_place_empty()
+            "Franka: CheckPlaceOccupied", lambda: not self.env.is_common_place_empty()
         )
 
         f32 = CommandBehavior(
             "Franka: PickUpObject3",
-            self.franka_command_queue,
-            self.franka_status_dict,
-            self.franka.pick_up,
-            self.block3,
+            self.command_queue,
+            self.status_dict,
+            self.robot.pick_up,
+            self.env.block3,
         )
 
         f33 = CommandBehavior(
             "Franka: ResetArm",
-            self.franka_command_queue,
-            self.franka_status_dict,
-            self.franka.reset_arm,
+            self.command_queue,
+            self.status_dict,
+            self.robot.reset_arm,
             close_grip=False,
         )
 
         f34 = CommandBehavior(
             "Franka: PlaceObject3",
-            self.franka_command_queue,
-            self.franka_status_dict,
-            self.franka.place,
-            self.block3,
-            self.franka_place_location,
-            self.block2,
+            self.command_queue,
+            self.status_dict,
+            self.robot.place,
+            self.env.block3,
+            self.env.franka_place_location,
+            self.env.block2,
         )
 
         f35 = CommandBehavior(
             "Franka: ResetArm",
-            self.franka_command_queue,
-            self.franka_status_dict,
-            self.franka.reset_arm,
+            self.command_queue,
+            self.status_dict,
+            self.robot.reset_arm,
         )
 
         franka_task1.add_children([f11, f12, f13, f14, f15])
@@ -845,72 +659,187 @@ class Env:
 
         franka_root.add_children([franka_task1, franka_task2, franka_task3])
 
-        self.franka_tree = pt.trees.BehaviourTree(franka_root)
-
-    def bt_loop(self):
-        print("Running BT in background thread...")
-        while not (self.franka_done and self.pr2_done):
-            if not self.pr2_done:
-                self.pr2_tree.tick()
-                self.pr2_done = (
-                    True
-                    if self.pr2_tree.root.status == pt.common.Status.SUCCESS
-                    else False
-                )
-            if not self.franka_done:
-                self.franka_tree.tick()
-                self.franka_done = (
-                    True
-                    if self.franka_tree.root.status == pt.common.Status.SUCCESS
-                    else False
-                )
-            time.sleep(0.1)
-
-    async def run_simulation(self):
-        while not (self.franka_done and self.pr2_done):
-            for _ in range(NUM_SIM):
-                p.stepSimulation()
-            await asyncio.sleep(TIME_STEP * SIM_SCALING)
-
-    async def execute_pr2(self):
-        while not self.pr2_done:
-            if not self.pr2_command_queue.empty():
-                cmd = await self.pr2_command_queue.get()
-                key, action, args, kwargs = cmd
-                await action(*args, **kwargs)
-                self.pr2_status_dict[key] = 2
-            await asyncio.sleep(TIME_STEP * WAIT_SCALING)
-
-    async def execute_franka(self):
-        while not self.franka_done:
-            if not self.franka_command_queue.empty():
-                cmd = await self.franka_command_queue.get()
-                key, action, args, kwargs = cmd
-                await action(*args, **kwargs)
-                self.franka_status_dict[key] = 2
-            await asyncio.sleep(TIME_STEP * WAIT_SCALING)
-
-    async def execute_task(self):
-        await asyncio.gather(self.execute_franka(), self.execute_pr2())
+        return pt.trees.BehaviourTree(franka_root)
 
 
-class FrankaTree(BehaviorTreePlan)
+class PR2Tree(BehaviorTreePlan):
+    def __init__(self, env, robot):
+        self.env = env
+        self.robot = robot
+        super().__init__()
+
+    def create_tree(self):
+        pr2_root = pt.composites.Sequence("PR2TaskPlan", True)
+
+        pr2_task1 = pt.composites.Sequence("PR2PickPlaceTask1", True)
+        pr2_task2 = pt.composites.Sequence("PR2PickPlaceTask2", True)
+        pr2_task3 = pt.composites.Sequence("PR2PickPlaceTask3", True)
+
+        p11 = CommandBehavior(
+            "PR2: MoveToObject1",
+            self.command_queue,
+            self.status_dict,
+            self.robot.move_base_to_location,
+            get_pose(self.env.block1)[0],
+            obstacles=self.env.obstacles,
+        )
+
+        p12 = CommandBehavior(
+            "PR2: PickUpObject1",
+            self.command_queue,
+            self.status_dict,
+            self.robot.pick_up,
+            self.env.block1,
+        )
+
+        p13 = CommandBehavior(
+            "PR2: MoveToPlacement",
+            self.command_queue,
+            self.status_dict,
+            self.robot.move_base_to_location,
+            self.env.common_place_location,
+            obstacles=self.env.obstacles,
+        )
+
+        p14 = ConditionBehavior("PR2: CheckPlaceEmpty", self.env.is_common_place_empty)
+
+        p15 = CommandBehavior(
+            "PR2: PlaceObject1",
+            self.command_queue,
+            self.status_dict,
+            self.robot.place,
+            self.env.block1,
+            self.env.common_place_location,
+            self.env.table2,
+        )
+
+        p16 = CommandBehavior(
+            "PR2: ResetArm",
+            self.command_queue,
+            self.status_dict,
+            self.robot.reset_arm,
+        )
+
+        p21 = CommandBehavior(
+            "PR2: MoveToObject2",
+            self.command_queue,
+            self.status_dict,
+            self.robot.move_base_to_location,
+            get_pose(self.env.block2)[0],
+            obstacles=self.env.obstacles,
+        )
+
+        p22 = CommandBehavior(
+            "PR2: PickUpObject2",
+            self.command_queue,
+            self.status_dict,
+            self.robot.pick_up,
+            self.env.block2,
+        )
+
+        p23 = CommandBehavior(
+            "PR2: MoveToPlacement",
+            self.command_queue,
+            self.status_dict,
+            self.robot.move_base_to_location,
+            self.env.common_place_location,
+            obstacles=self.env.obstacles,
+        )
+
+        p24 = ConditionBehavior("PR2: CheckPlaceEmpty", self.env.is_common_place_empty)
+
+        p25 = CommandBehavior(
+            "PR2: PlaceObject2",
+            self.command_queue,
+            self.status_dict,
+            self.robot.place,
+            self.env.block2,
+            self.env.common_place_location,
+            self.env.table2,
+        )
+
+        p26 = CommandBehavior(
+            "PR2: ResetArm",
+            self.command_queue,
+            self.status_dict,
+            self.robot.reset_arm,
+        )
+
+        p31 = CommandBehavior(
+            "PR2: MoveToObject3",
+            self.command_queue,
+            self.status_dict,
+            self.robot.move_base_to_location,
+            get_pose(self.env.block3)[0],
+            obstacles=self.env.obstacles,
+        )
+
+        p32 = CommandBehavior(
+            "PR2: PickUpObject3",
+            self.command_queue,
+            self.status_dict,
+            self.robot.pick_up,
+            self.env.block3,
+        )
+
+        p33 = CommandBehavior(
+            "PR2: MoveToPlacement",
+            self.command_queue,
+            self.status_dict,
+            self.robot.move_base_to_location,
+            self.env.common_place_location,
+            obstacles=self.env.obstacles,
+        )
+
+        p34 = ConditionBehavior("PR2: CheckPlaceEmpty", self.env.is_common_place_empty)
+
+        p35 = CommandBehavior(
+            "PR2: PlaceObject3",
+            self.command_queue,
+            self.status_dict,
+            self.robot.place,
+            self.env.block3,
+            self.env.common_place_location,
+            self.env.table2,
+        )
+
+        p36 = CommandBehavior(
+            "PR2: ResetArm",
+            self.command_queue,
+            self.status_dict,
+            self.robot.reset_arm,
+        )
+
+        pr2_task1.add_children([p11, p12, p13, p14, p15, p16])
+        pr2_task2.add_children([p21, p22, p23, p24, p25, p26])
+        pr2_task3.add_children([p31, p32, p33, p34, p35, p36])
+
+        pr2_root.add_children([pr2_task1, pr2_task2, pr2_task3])
+
+        return pt.trees.BehaviourTree(pr2_root)
 
 
 async def main():
     env = Env(use_gui=True)
-    bt_thread = threading.Thread(target=env.bt_loop, daemon=True)
+    franka = FrankaTree(env, env.franka)
+    pr2 = PR2Tree(env, env.pr2)
 
+    bt_thread = threading.Thread(target=merged_loop, args=(franka, pr2), daemon=True)
+    rest = TIME_STEP * WAIT_SCALING
     wait_if_gui("Start?")
     print("The Behavior Trees for Individual Robots:")
-    print(pt.display.ascii_tree(env.pr2_tree.root))
-    print(pt.display.ascii_tree(env.franka_tree.root))
+    pr2.display_tree()
+    franka.display_tree()
     start_time = time.perf_counter()
 
+    print("Running BT in background thread...")
     bt_thread.start()
 
-    await asyncio.gather(env.run_simulation(), env.execute_franka(), env.execute_pr2())
-    # await asyncio.gather(env.run_simulation(),env.execute_task())
+    await asyncio.gather(
+        env.run_simulation(are_all_trees_done, franka, pr2),
+        franka.execute_tree(rest),
+        pr2.execute_tree(rest),
+    )
 
     end_time = time.perf_counter()
     print(f"Execution time: {end_time - start_time:.4f} seconds")
