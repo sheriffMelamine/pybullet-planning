@@ -4,12 +4,6 @@ import py_trees as pt  # type: ignore
 import threading
 import asyncio
 import pybullet as p  # type: ignore
-from task_planning_tools.behavior_tree import (
-    ConditionBehavior,
-    CommandBehavior,
-    BehaviorTreePlan,
-    merged_loop,
-)
 
 from pybullet_tools.pr2_utils import (
     DRAKE_PR2_URDF,
@@ -892,9 +886,6 @@ class Env:
 
     async def execute_task(self):
         await asyncio.gather(self.execute_franka(), self.execute_pr2())
-
-
-class FrankaTree(BehaviorTreePlan)
 
 
 async def main():

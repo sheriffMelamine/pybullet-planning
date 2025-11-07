@@ -15,6 +15,11 @@ The system enables coordinated workflows between robots with different capabilit
 </p>
 
 ---
+### Installation:
+
+```bash
+git clone --recursive https://github.com/sheriffMelamine/pybullet-planning.git
+```
 
 ### Requirements:
 
@@ -22,6 +27,11 @@ In order to test the codes, install python modules with their appropriate versio
 
 ```bash
 pip install -r requirements.txt
+```
+The robots (Franka and PR2) used in this project are using **ikfast** for solving inverse kinematics. For that:
+
+```bash
+source setup_ikfast.sh
 ```
 
 ---
