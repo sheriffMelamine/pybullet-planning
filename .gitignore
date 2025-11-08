@@ -13,3 +13,4 @@ temp
 **/*.~un
 build/
 __pycache__/
+examples/
